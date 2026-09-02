@@ -1,5 +1,6 @@
 [install]
 exact = false
 
-[test]
-root = "./apps/api/src/domain"
+# No `[test] root` here: it overrides the paths passed on the command line, so
+# pinning it silently excluded whatever the scripts asked for. The `test` and
+# `test:integration` scripts name their own paths.

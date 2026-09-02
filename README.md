@@ -185,10 +185,12 @@ toggling it live.**
 | `bun db:reset` | Drop the volume and re-migrate — **scoped to this project only** |
 | `bun dev` | API on :8090 and web on :3000 |
 | `bun dev:api` / `bun dev:web` | One at a time |
-| `bun seed` | Generate the dataset, print the checksum, report defects |
+| `bun seed` | Generate the dataset, print the checksum, report defects (~2 min) |
 | `bun train` | Train the model, print AUC / Brier, activate it |
 | `bun whatif` | BASELINE vs AGENT on the held-out split |
 | `bun test` | Domain unit tests (pure functions only) |
+| `bun run test:integration` | Pipeline tests against Postgres — **stop `bun dev` first** |
+| `bun run test:all` | Unit + integration |
 | `bun run lint` | ESLint, including the layer rule |
 | `bun run typecheck` | `tsc --noEmit` on both workspaces |
 | `bun run check` | lint + typecheck + test |
@@ -218,13 +220,29 @@ payloads and PII are never logged.
 | `DATABASE_URL` | `…@localhost:5434/revenant_mini` | Keep in sync with the above |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowlist |
 | `SIM_SEED` | `42` | Same seed ⇒ same checksum, on any machine |
-| `SIM_PAYMENTS` / `SIM_MERCHANTS` / `SIM_DAYS` | `5000` / `5` / `7` | |
+| `SIM_PAYMENTS` / `SIM_MERCHANTS` / `SIM_DAYS` | `75000` / `5` / `7` | 75,000, not the spec's 5,000 — see below |
 | `SIM_ENDS_AT` | `2026-08-01T00:00:00Z` | Fixed, never `now` — the dataset must be comparable across machines |
 | `SIM_SPEED` | `60` | 1 real second = 60 simulated minutes |
 | `WEBHOOK_SECRET` | dev value | HMAC for the ingest path |
 | `LLM_PROVIDER` | `none` | See [above](#the-llm-is-optional) |
 | `LLM_TIMEOUT_MS` | `4000` | Slower than this and the deterministic fallback takes over |
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
+
+### Dataset size differs from the spec
+
+`SIM_PAYMENTS` defaults to **75,000**, not §8.1's 5,000. At 5,000 payments over
+7 days the aggregate series carries 7.4 attempts per 15-minute evaluation
+window, so §7.3's `minAttempts: 20` can never be met and the anomaly detector
+cannot fire on anything at all. Two other spec numbers agree: §8.7's what-if
+table expects 2,140 failed payments (5,000 yields ~470), and §8.2 calls any
+incident affecting fewer than 20 payments a dataset defect (at 5,000,
+`BANK_OUTAGE` gets 13).
+
+75,000 is the smallest size where the demo's centrepiece — detecting
+`INTERNATIONAL_3DS_BLOCK` on the international slice, which is 18% of traffic —
+clears §7.3's volume floor with the spec's own numbers unmodified. Seeding takes
+about two minutes and the database lands at ~193 MB. Lower it if you only need
+the pipeline and not the detector.
 
 ### One port differs from the spec
 
@@ -307,6 +325,10 @@ session ends.
 **The dashboard shows "No dataset".** Correct behaviour on an empty database.
 `bun seed`.
 
+**"Another relay is draining this database".** A `bun dev` API is running and
+ticking its own relay against the same outbox, which competes with the
+integration tests. Stop it: `pkill -f "src/index.ts"`.
+
 **Narratives say `template` instead of `llm`.** `LLM_PROVIDER` is `none` or its
 key is unset. `/ready` names the reason. This is a supported state.
 
@@ -317,11 +339,6 @@ key is unset. `/ready` names the reason. This is a supported state.
 ```bash
 bun run check      # lint + typecheck + test, the pre-commit gate
 ```
-
-> `bun test` currently exits non-zero with `0 test files matching …`, so
-> `bun run check` fails until **P2** lands the first domain tests. That is
-> deliberate: a test runner that passes on an empty suite is how a suite quietly
-> stops running. `bun run lint` and `bun run typecheck` pass today.
 
 `domain/` modules are pure functions and are the only things unit-tested — they
 carry the highest correctness risk, which is exactly why they are kept free of

@@ -18,11 +18,13 @@
     "seed": "bun run --cwd apps/api seed",
     "train": "bun run --cwd apps/api train",
     "whatif": "bun run --cwd apps/api whatif",
-    "test": "bun test apps/api/src/domain",
+    "test": "bun test apps/api/src/domain apps/api/src/sim",
     "typecheck": "bun run --cwd apps/api typecheck && bun run --cwd apps/web typecheck",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "check": "bun run lint && bun run typecheck && bun test"
+    "check": "bun run lint && bun run typecheck && bun run test",
+    "test:integration": "bun run --cwd apps/api test:integration",
+    "test:all": "bun run test && bun run test:integration"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

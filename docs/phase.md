@@ -161,19 +161,32 @@ optimisations. They must be in 001, not added later.
 
 ## P2 — Pure domain primitives
 
-**Status:** TODO
+**Status:** DONE — 120 tests, `bun run check` green
 
-- `domain/money.ts` — paise helpers, the five amount bands (§8.1), one definition
-  shared by analytics, RCA and the model
-- `domain/payment-state.ts` — the state machine (§7.1)
+- `domain/money.ts` — `Paise` nominal type, `assertPaise` at the boundaries,
+  `scalePaise` as the single place a float touches money, `rate()` returning
+  `null` on a zero denominator, the five amount bands (§8.1) as one definition
+  shared by analytics, RCA and the model, Indian-grouped formatting (§11.1)
+- `domain/payment-state.ts` — the state machine (§7.1), plus
+  `incrementsAttemptIndex`, `isTerminal` and `isAbandoned`
 - `domain/failure-codes.ts` — codes to families (§7.2), `CROSS_BORDER` as its
-  own family
+  own family, `isUnactionable` and `isRouteFailure`
 
-**Gate:** exhaustive state-machine test passes under `bun test`, including
-terminal protection (`CAPTURED` moves only on `refund.processed`) and staleness
-(`occurredAt < lastEventAt` records but does not move state) · **`bun run check`
-goes green** — it fails today only because `bun test` finds zero test files, and
-that strictness is deliberate.
+**Gate:** all 6 × 6 = 36 state/event pairs asserted individually · terminal
+protection (`CAPTURED` moves only on `refund.processed`; `REFUNDED` moves on
+nothing) · staleness records without moving state, **and is checked before
+terminal protection**, per the rule order in §7.1 · `bun run check` green.
+
+**Verified by mutation, not just by passing:** removing terminal protection
+fails 4 tests, folding `THREEDS_FAILED` into `CUSTOMER` fails 4, and reordering
+the staleness check after terminal protection fails 2. A guardrail whose test
+cannot fail is not a guardrail.
+
+**One edge the spec implies but does not spell out.** `ATTEMPTED + payment.captured
+→ CAPTURED` is legal, because §8.6 has the simulated gateway emit
+`payment.attempted` then `payment.captured` when a recovery succeeds. Without
+that edge a recovered payment could never reach `CAPTURED` and
+`revenue_recovered` would be structurally zero. Asserted explicitly.
 
 **Watch for:** folding `CROSS_BORDER` codes into `CUSTOMER` is called out in §7.2
 as the single most expensive mistake available in this dataset. The family split
@@ -183,48 +196,123 @@ must exist before the model trains.
 
 ## P3 — Ingest, outbox, relay, projector
 
-**Status:** TODO
+**Status:** DONE — 15 integration tests, stable over 15 consecutive runs
 
-- `app/ingest.ts` — `payment_events` + `outbox` in ONE transaction, return 200
-  immediately, nothing else synchronous
-- `app/relay.ts` — 200 ms tick, `FOR UPDATE SKIP LOCKED`, `sent_at` after
-  handlers ack, dead-letter at 5 attempts
-- `app/projector.ts` — `SELECT … FOR UPDATE` on the payment row, then payment +
-  attempt + transition + `processed_events` marker in ONE transaction
-- `POST /webhooks/gateway` — HMAC signature, constant-time compare
-- abandonment sweep — `ATTEMPTED`, idle 30 simulated minutes, sets `abandoned`
+- `app/events.ts` — the webhook envelope and its zod schema
+- `app/ingest.ts` — `payment_events` + `outbox` in ONE transaction; a duplicate
+  is rejected by `UNIQUE(event_id)` and **never reaches the outbox**
+- `app/relay.ts` — 200 ms self-scheduling tick, `FOR UPDATE SKIP LOCKED`,
+  `sent_at` only after the handler acknowledges, dead-letter at 5 attempts
+- `app/projector.ts` — `SELECT … FOR UPDATE` on the payment row, then the
+  `processed_events` marker + payment + transition + NOTIFY in ONE transaction
+- `app/abandonment.ts` — `ATTEMPTED`, idle 30 simulated minutes; `now` is passed
+  in, because a wall clock here would never fire during a 3-minute demo
+- `lib/signature.ts` — HMAC-SHA256 over the **raw** body, constant-time compare
+- `db/notify.ts` — the `NOTIFY` write half; the listener lands in P6
+- `POST /webhooks/gateway`
 
-**Gate:** posting the same event **three times** produces exactly one payment,
-one transition, one rollup increment · an out-of-order event lands with
-`stale = true` and does not move state · two relay loops never deliver the same
-outbox row twice.
+**Gate:** the same webhook posted 3× yields one payment, one event row and the
+right number of transitions · an out-of-order event is written with
+`stale = true` and does not move state · concurrent drains deliver every row
+**exactly once, with zero duplicates and zero misses** · a `CAPTURED` payment is
+never re-attempted · an unroutable row dead-letters and the row behind it still
+delivers · unsigned and tampered bodies are 401.
+
+**Two real bugs, both found by the gate:**
+
+1. **The relay could double-deliver.** The claim `UPDATE` ran in autocommit, so
+   `FOR UPDATE SKIP LOCKED` held its lock for that one statement only. It
+   committed, released the locks, and because `sent_at` is not set until the
+   handler acknowledges, a second relay found the row still pending and
+   delivered it again. `SKIP LOCKED` protects concurrent *statements*, not a
+   claim-then-handle gap. **The claim and the delivery now share one
+   transaction**, so the lock spans the whole delivery.
+2. **One relay could destroy another's messages.** An unknown topic was
+   dead-lettered on sight — but §6.1 contemplates N relay loops, and a topic
+   *this* process cannot route may be one *another* process handles. Unknown
+   topics now count toward `MAX_ATTEMPTS` like any other failure: a genuinely
+   unroutable row still dies, after five tries rather than instantly.
+
+**A test that was wrong rather than a bug:** the first concurrency test asserted
+a global claim count, which fails for reasons unrelated to the property. It now
+counts deliveries per row and asserts zero duplicates and zero misses.
+
+**Integration tests need the dev API stopped.** A running `bun dev` ticks its
+own relay against the same database and competes for rows, which looks exactly
+like a relay concurrency bug and is not one. `test/helpers.ts` detects a
+competing relay and fails with that instruction rather than leaving somebody to
+debug a phantom.
+
+**Run them with:** `bun run test:integration` (needs Postgres up; `bun run
+test:all` runs unit and integration together).
 
 ---
 
 ## P4 — Deterministic dataset
 
-**Status:** TODO
+**Status:** DONE — 27 generator tests, checksum reproduced across two full runs
 
-- `lib/rng.ts` — mulberry32, seeded
+- `lib/rng.ts` — mulberry32
 - `sim/generator.ts` — §8.1 distributions: method mix, log-normal amounts, daily
-  rhythm, method-tied failure codes, 18% international at a 19% baseline failure
-  rate against 7% domestic
-- Five injected incidents + `INTERNATIONAL_3DS_BLOCK` (§8.2) into
-  `ground_truth_incidents`
+  rhythm in IST, method-tied failure codes, 18% international with cross-border
+  codes never leaking onto domestic traffic
+- Six injected incidents including `INTERNATIONAL_3DS_BLOCK` (§8.2), placed in
+  daytime IST, infrastructure-wide
 - Two **unlabelled** noise windows (§8.4)
 - Counterfactual labels + chronological `train`/`val`/`test` split (§8.3)
-- SHA-256 checksum onto `dataset_runs`
-- `bun seed`
+- SHA-256 checksum → `dataset_runs`; the <20-payment defect check
+- `sim/seed.ts` / `bun seed`
 
-**Gate:** 5,000 payments · checksum printed · **same seed produces the same
-checksum, twice in a row** · ground-truth tables populated · any labelled
-incident affecting fewer than 20 payments is reported as a dataset defect ·
-international baseline failure rate is materially above domestic (~19% vs ~7%)
-**before any detection runs**.
+**Gate:** 75,000 payments · **the same seed produced an identical checksum on
+two consecutive full runs** (`94211eded…`) · ground truth populated · **zero
+dataset defects** · international failure rate **18.6%** against domestic
+**6.9%**, verified in SQL against the projected state, not just in the
+generator's own stats.
 
-**Watch for:** the labels are counterfactuals decided at generation time. Once a
-payment exists, whether a retry *would* have worked is unknowable — there is no
-later phase in which this can be added.
+**Events go through the real projector, never straight into `payments` (§8.5).**
+A dataset built on its own notion of state validates nothing — it is perfectly
+possible to load 75,000 rows the state machine could never have produced, and
+every later phase would then be measuring a fiction. All 291,939 events were
+applied by the projector; the 216,939 transitions are its output.
+
+### The spec contradicts itself on dataset size
+
+`SIM_PAYMENTS=5000` (§8.1) is incompatible with three other numbers in the same
+document. At 5,000 payments over 7 days the aggregate series carries **7.4
+attempts per 15-minute evaluation window**, so §7.3's `minAttempts: 20` can
+never be met and **the detector cannot fire on anything** — P7 would have
+nothing to demonstrate.
+
+| Spec number | At 5,000 | Needs |
+|---|---|---|
+| §8.7 what-if: 2,140 failed payments | ~470 | ~23,000 |
+| §7.3 `minAttempts: 20` per evaluation window | 7.4 | ~13,500 |
+| §8.2 <20 payments per incident is a defect | `BANK_OUTAGE` = 13 → defect | ~13,000 |
+| §8.2 centrepiece detected on the 18% international slice | 1.3 | **~75,000** |
+
+**Resolved at 75,000**, which is the only value where §7.3's gates hold *as
+written* on the international slice — the dimension the demo's centrepiece
+incident is detected on. Seed takes ~1m50s and the database is 193 MB.
+`SIM_PAYMENTS` is the knob.
+
+### Calibration
+
+The failure rates in `DEFAULT_PARAMS` are **draw** rates, not observed rates:
+customer failure-runs, incident windows and noise all push the observed rate
+above the draw rate. They are calibrated against generated output — 0.051
+domestic and 0.138 international land the dataset on §8.1's stated ~7% and ~19%.
+The tests assert the observed gap, because the gap is the product (§1.1).
+
+**One semantic fix:** `affected_payments` on a ground-truth incident counts
+payments **in the degraded slice during the window**, not failures caused. The
+detector sees attempts *and* failures in that slice, so slice volume is what
+decides whether an incident is detectable at all — which is exactly what the
+<20 defect check is guarding.
+
+**A test-runner bug found on the way:** `bunfig.toml` pinned `[test] root` to
+`domain/`, which **overrides the paths passed on the command line**. The
+generator tests appeared to pass while never running. The pin is gone; the
+scripts name their own paths.
 
 ---
 

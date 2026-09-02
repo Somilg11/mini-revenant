@@ -1,6 +1,7 @@
 import { config, redacted } from './config.ts';
 import { closeDb } from './db/client.ts';
 import { migrate } from './db/migrate.ts';
+import { startRelay, stopRelay } from './app/relay.ts';
 import { createApp } from './http/app.ts';
 import { log } from './lib/logger.ts';
 import { installSignalHandlers, onShutdown, shutdown } from './lib/shutdown.ts';
@@ -26,6 +27,12 @@ try {
   log.error('boot aborted: migrations failed', { err });
   await shutdown('migration-failure', 1);
 }
+
+// Started after the migrations so the relay never queries a table that does
+// not exist yet. Registered before the server binds, so a shutdown during
+// startup still unwinds it.
+onShutdown('relay', stopRelay);
+startRelay();
 
 const app = createApp();
 

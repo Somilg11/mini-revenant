@@ -45,6 +45,15 @@ export const sql = postgres(config.DATABASE_URL, {
 
 export type Sql = typeof sql;
 
+/**
+ * Anything that can run a query: the pool, or a transaction handle from
+ * `sql.begin()`. Helpers take this so the same function works inside and
+ * outside a transaction — which matters because §6.1 requires several writes
+ * (the NOTIFY, the outbox update) to ride *inside* the transaction that makes
+ * them true, not alongside it.
+ */
+export type Queryable = Sql | postgres.TransactionSql<{ bigint: number }>;
+
 export interface PingResult {
   up: boolean;
   latencyMs: number;
