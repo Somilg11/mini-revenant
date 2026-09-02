@@ -1,0 +1,21 @@
+node_modules/
+.env
+.env.local
+*.log
+
+# bun
+bun.lockb
+
+# next
+.next/
+out/
+next-env.d.ts
+
+# misc
+.DS_Store
+.turbo/
+dist/
+coverage/
+
+# typescript incremental build info
+*.tsbuildinfo

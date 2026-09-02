@@ -1,0 +1,30 @@
+name: minirevenant                       # every resource is namespaced under this
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: minirevenant-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-revenant}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-revenant}
+      POSTGRES_DB: ${POSTGRES_DB:-revenant_mini}
+    ports:
+      # 5432 and 5433 are taken by the recriauth stack on this machine.
+      # The spec pins 5433 for the sole reason of not colliding with an
+      # existing postgres; 5434 honours that reason. Override in .env.
+      - "${POSTGRES_HOST_PORT:-5434}:5432"
+    volumes:
+      - minirevenant-pgdata:/var/lib/postgresql/data
+    shm_size: 256mb
+    command: >
+      postgres -c shared_buffers=256MB -c max_connections=50
+               -c log_min_duration_statement=500
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-revenant} -d ${POSTGRES_DB:-revenant_mini}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  minirevenant-pgdata:

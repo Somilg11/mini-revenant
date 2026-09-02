@@ -1,0 +1,34 @@
+{
+  "name": "minirevenant",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "db:up": "docker compose -p minirevenant up -d postgres && docker compose -p minirevenant exec -T postgres sh -c 'until pg_isready -U revenant -d revenant_mini -q; do sleep 1; done' && echo 'postgres healthy'",
+    "db:down": "docker compose -p minirevenant down",
+    "db:reset": "docker compose -p minirevenant down -v && bun run db:up && bun run db:migrate",
+    "db:psql": "docker compose -p minirevenant exec postgres psql -U revenant revenant_mini",
+    "db:logs": "docker compose -p minirevenant logs -f postgres",
+    "db:migrate": "bun run --cwd apps/api migrate",
+    "dev": "bun run --filter '*' dev",
+    "dev:api": "bun run --cwd apps/api dev",
+    "dev:web": "bun run --cwd apps/web dev",
+    "seed": "bun run --cwd apps/api seed",
+    "train": "bun run --cwd apps/api train",
+    "whatif": "bun run --cwd apps/api whatif",
+    "test": "bun test apps/api/src/domain",
+    "typecheck": "bun run --cwd apps/api typecheck && bun run --cwd apps/web typecheck",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "check": "bun run lint && bun run typecheck && bun test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/bun": "latest",
+    "eslint": "^10.9.1",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.69.0"
+  }
+}

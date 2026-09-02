@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+/* §11.1 — Linear: near-black ground, one indigo accent, hairline borders,
+   small type, generous line height, near-zero chrome. Restraint is the theme:
+   no gradients, no shadow heavier than a 1px border, no colour that is not
+   carrying information. */
+:root {
+  --bg:            #08090a;   /* page */
+  --bg-elevated:   #0f1011;   /* cards, panels */
+  --bg-hover:      #16171a;
+  --border:        #1f2023;   /* hairline, the primary separator */
+  --border-strong: #2a2c31;
+  --text:          #f7f8f8;
+  --text-secondary:#8a8f98;   /* labels, metadata, units */
+  --text-tertiary: #62666d;
+  --accent:        #5e6ad2;   /* Linear indigo — actions and the primary series */
+  --accent-hover:  #6e79dd;
+  --accent-subtle: #5e6ad21a;
+  --success:       #4cb782;   /* recovered */
+  --warning:       #f2c94c;   /* requires approval */
+  --danger:        #eb5757;   /* at risk, denied */
+  --info:          #4ea7fc;   /* incident open */
+  --radius:        6px;
+  --radius-lg:     8px;
+  --font: "Inter var", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "Berkeley Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-bg-hover: var(--bg-hover);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+  --font-sans: var(--font);
+  --font-mono: var(--font-mono);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13px;              /* body */
+  line-height: 1.6;             /* generous */
+  -webkit-font-smoothing: antialiased;
+  margin: 0;
+}
+
+/* Type scale. Never bold body text; 510 is the maximum outside headings. */
+.label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  font-weight: 510;
+}
+.section-title { font-size: 15px; font-weight: 510; letter-spacing: -0.01em; }
+.metric {
+  font-size: 28px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  font-weight: 510;
+}
+
+/* Borders, not shadows. A single elevation level. */
+.card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 14px;                /* density: 12–16px */
+}
+
+/* All money in tabular numerals, right-aligned in tables. */
+.num { font-variant-numeric: tabular-nums; text-align: right; }
+.mono { font-family: var(--font-mono); }
+
+/* Motion: 120ms on hover and mount only. Never slide, never bounce. */
+a, button { transition: color 120ms cubic-bezier(0.4, 0, 0.2, 1),
+                        background 120ms cubic-bezier(0.4, 0, 0.2, 1),
+                        border-color 120ms cubic-bezier(0.4, 0, 0.2, 1); }
+
+@keyframes fade-in { from { opacity: 0 } to { opacity: 1 } }
+.row-enter { animation: fade-in 150ms cubic-bezier(0.4, 0, 0.2, 1); }
+
+::selection { background: var(--accent-subtle); }
