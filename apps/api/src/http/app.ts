@@ -5,6 +5,7 @@ import { config } from '../config.ts';
 import { AppError, isConnectionError, publicMessage } from '../lib/errors.ts';
 import { log } from '../lib/logger.ts';
 import { health } from './routes/health.ts';
+import { metrics } from './routes/metrics.ts';
 import { webhooks } from './routes/webhooks.ts';
 
 /** Context variables set by middleware and read by handlers and the boundary. */
@@ -63,6 +64,7 @@ export function createApp(): Hono<AppEnv> {
 
   app.route('/', health);
   app.route('/', webhooks);
+  app.route('/', metrics);
 
   app.notFound((c) =>
     c.json({ error: { code: 'NOT_FOUND', message: `no route for ${c.req.method} ${c.req.path}` } }, 404),

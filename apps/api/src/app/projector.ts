@@ -1,4 +1,5 @@
 import { sql, type Queryable } from '../db/client.ts';
+import { applyRollupDelta, type RollupSubject } from './analytics.ts';
 import { notify } from '../db/notify.ts';
 import {
   incrementsAttemptIndex,
@@ -47,6 +48,27 @@ interface PaymentRow {
   version: number;
   amount_paise: number;
   merchant_id: string;
+  abandoned: boolean;
+  created_at: string;
+  method: string;
+  bank: string | null;
+  is_international: boolean;
+  card_network: string | null;
+  card_country: string | null;
+}
+
+/** The rollup dimensions a payment is counted under, from its own row. */
+function subjectOf(p: PaymentRow): RollupSubject {
+  return {
+    merchantId: p.merchant_id,
+    createdAt: p.created_at,
+    amountPaise: p.amount_paise,
+    method: p.method,
+    bank: p.bank,
+    isInternational: p.is_international,
+    cardNetwork: p.card_network,
+    cardCountry: p.card_country,
+  };
 }
 
 export async function project(event: WebhookEvent): Promise<ProjectionResult> {
@@ -65,7 +87,8 @@ export async function project(event: WebhookEvent): Promise<ProjectionResult> {
 
     // Row lock: concurrent events for one payment serialise here.
     const [existing] = await tx<PaymentRow[]>`
-      SELECT id, state, last_event_at, attempt_index, version, amount_paise, merchant_id
+      SELECT id, state, last_event_at, attempt_index, version, amount_paise, merchant_id, abandoned,
+             created_at, method::text AS method, bank, is_international, card_network, card_country
       FROM payments
       WHERE id = ${event.payment_id}
       FOR UPDATE
@@ -166,6 +189,23 @@ export async function project(event: WebhookEvent): Promise<ProjectionResult> {
       WHERE id = ${event.payment_id}
     `;
 
+    // Incremental rollup, in the same transaction as the state change it
+    // describes. A rollup written outside this transaction can survive a
+    // rollback of the fact it is counting.
+    const wasCaptured = existing.state === 'CAPTURED';
+    const nowCaptured = result.next === 'CAPTURED';
+    const wasFailed = existing.state === 'FAILED';
+    const nowFailed = result.next === 'FAILED';
+    await applyRollupDelta(tx, subjectOf(existing), {
+      successes: (nowCaptured ? 1 : 0) - (wasCaptured ? 1 : 0),
+      failures: (nowFailed ? 1 : 0) - (wasFailed ? 1 : 0),
+      capturedAmountPaise: existing.amount_paise * ((nowCaptured ? 1 : 0) - (wasCaptured ? 1 : 0)),
+      // The UPDATE below clears `abandoned`, so the rollup has to give the
+      // count back. Leaving this at 0 stranded the payment as permanently
+      // abandoned in the rollups while the row itself said otherwise.
+      abandoned: existing.abandoned ? -1 : 0,
+    });
+
     await notify(tx, 'payment', {
       payment_id: event.payment_id,
       merchant_id: existing.merchant_id,
@@ -209,6 +249,24 @@ async function createPayment(tx: Queryable, event: WebhookEvent): Promise<Projec
       'CREATED', ${event.occurred_at}, ${event.occurred_at}
     )
   `;
+
+  // A payment counts toward `attempts` in the bucket it was *created* in
+  // (§10): a payment that fails in one window and recovers in the next must
+  // belong to one window, or the two never reconcile.
+  await applyRollupDelta(
+    tx,
+    {
+      merchantId: d.merchant_id,
+      createdAt: event.occurred_at,
+      amountPaise: d.amount_paise,
+      method: d.method,
+      bank: d.bank,
+      isInternational: d.is_international,
+      cardNetwork: d.card_network,
+      cardCountry: d.card_country,
+    },
+    { attempts: 1, grossAmountPaise: d.amount_paise },
+  );
 
   await notify(tx, 'payment', {
     payment_id: event.payment_id,

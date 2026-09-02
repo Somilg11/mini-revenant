@@ -1,6 +1,7 @@
 import { sql } from '../db/client.ts';
 import { ABANDONMENT_IDLE_MINUTES } from '../domain/payment-state.ts';
 import { log } from '../lib/logger.ts';
+import { applyRollupDelta } from './analytics.ts';
 
 /**
  * Abandonment sweep (§7.1, §9).
@@ -20,17 +21,50 @@ export async function sweepAbandoned(
 ): Promise<number> {
   const cutoff = new Date(now.getTime() - idleMinutes * 60_000).toISOString();
 
-  const rows = await sql<{ id: string }[]>`
-    UPDATE payments
-    SET abandoned = TRUE, version = version + 1
-    WHERE state = 'ATTEMPTED'
-      AND NOT abandoned
-      AND last_event_at < ${cutoff}
-    RETURNING id
-  `;
+  return sql.begin(async (tx) => {
+    const rows = await tx<
+      {
+        id: string;
+        merchant_id: string;
+        created_at: string;
+        amount_paise: number;
+        method: string;
+        bank: string | null;
+        is_international: boolean;
+        card_network: string | null;
+        card_country: string | null;
+      }[]
+    >`
+      UPDATE payments
+      SET abandoned = TRUE, version = version + 1
+      WHERE state = 'ATTEMPTED'
+        AND NOT abandoned
+        AND last_event_at < ${cutoff}
+      RETURNING id, merchant_id, created_at, amount_paise, method::text AS method,
+                bank, is_international, card_network, card_country
+    `;
 
-  if (rows.length > 0) {
-    log.info('abandonment sweep', { abandoned: rows.length, cutoff, idleMinutes });
-  }
-  return rows.length;
+    // The rollup moves in the same transaction as the flag it counts.
+    for (const r of rows) {
+      await applyRollupDelta(
+        tx,
+        {
+          merchantId: r.merchant_id,
+          createdAt: r.created_at,
+          amountPaise: r.amount_paise,
+          method: r.method,
+          bank: r.bank,
+          isInternational: r.is_international,
+          cardNetwork: r.card_network,
+          cardCountry: r.card_country,
+        },
+        { abandoned: 1 },
+      );
+    }
+
+    if (rows.length > 0) {
+      log.info('abandonment sweep', { abandoned: rows.length, cutoff, idleMinutes });
+    }
+    return rows.length;
+  });
 }

@@ -189,7 +189,8 @@ toggling it live.**
 | `bun train` | Train the model, print AUC / Brier, activate it |
 | `bun whatif` | BASELINE vs AGENT on the held-out split |
 | `bun test` | Domain unit tests (pure functions only) |
-| `bun run test:integration` | Pipeline tests against Postgres — **stop `bun dev` first** |
+| `bun run test:integration` | Pipeline + analytics tests against Postgres — **stop `bun dev` first** |
+| `bun rollups:recompute` | Rebuild rollups from `payments` and report drift |
 | `bun run test:all` | Unit + integration |
 | `bun run lint` | ESLint, including the layer rule |
 | `bun run typecheck` | `tsc --noEmit` on both workspaces |
@@ -305,6 +306,28 @@ a disabled LLM are both normal states, reported with their reason rather than
 treated as failures.
 
 ---
+
+## Known security limitations
+
+Deliberate, and scoped by §3 of the spec — but real, so they are stated rather
+than left to be discovered.
+
+- **The API is unauthenticated.** Anyone who can reach `:8090` can read every
+  metric, and `?merchant_id=` returns any tenant's data. §3 puts auth and
+  multi-tenancy enforcement out of scope for the MVP; the merchant switcher is
+  hardcoded. Do not expose this port.
+- **`processed_events` and `outbox` are never pruned.** Correct, but unbounded:
+  `processed_events` reaches ~292k rows / 37 MB after one seed and grows with
+  every event.
+- **The webhook has no rate limit.** Signature verification is cheap and the
+  body is capped at 64 KB, so the exposure is bounded, but there is no
+  per-caller throttle.
+
+What *is* enforced: HMAC-SHA256 over the raw body with a constant-time compare;
+a 16-character minimum signing key; a 64 KB body cap; amount and timestamp
+bounds at the edge **and** as database CHECK constraints; parameterised SQL;
+error responses that carry a code and a request id but never a stack or driver
+message; and log redaction by key, so a careless call site fails safe.
 
 ## Troubleshooting
 

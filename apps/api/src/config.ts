@@ -24,7 +24,9 @@ const Schema = z.object({
   SIM_ENDS_AT: z.string().datetime().default('2026-08-01T00:00:00Z'),
   SIM_SPEED: z.coerce.number().positive().default(60),
 
-  WEBHOOK_SECRET: z.string().min(1),
+  // A signing key short enough to guess is the same as no signature at all.
+  // 16 characters is the floor; the shipped development value is longer.
+  WEBHOOK_SECRET: z.string().min(16, 'WEBHOOK_SECRET must be at least 16 characters'),
 
   // ── LLM ──────────────────────────────────────────────────────────────────
   // Provider-agnostic via the Vercel AI SDK. Optional by design: an absent key

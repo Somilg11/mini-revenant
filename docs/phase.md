@@ -85,6 +85,50 @@ judge can interrogate directly.
 
 ---
 
+## 0.2 Security and correctness audit (after P5)
+
+Eight findings across P0–P5. Six fixed, two accepted and documented. Every fix
+carries a regression test in `test/security.integration.test.ts`.
+
+### Fixed
+
+| # | Finding | Severity | Fix |
+|---|---|---|---|
+| 1 | **An accepted webhook could permanently break the metrics API.** Two payments near `MAX_SAFE_INTEGER` sum past it; the driver refuses to round a `BIGINT` it cannot represent exactly, so `/api/v1/metrics/summary` answered **500 and kept answering 500** until the rows were deleted. | High | `MAX_AMOUNT_PAISE` (₹10 crore) at the edge **and** a `payments_amount_sane` CHECK, so no code path routes around it |
+| 2 | **`abandoned` rollups were never decremented.** A payment leaving the abandoned state cleared the flag on its row but not in the rollup. | High | Projector gives the count back |
+| 3 | **The drift check was blind to exactly that bug.** It compared only attempts/successes/failures/gross — never `abandoned` or `captured_amount_paise` — so it reported **drift 0 while the rollup was wrong**. A drift detector with a blind spot asserts correctness it never tested. | High | Both columns now compared; corrupting either is detected |
+| 4 | **A far-future timestamp poisoned the dashboard.** One event dated 9999 stretched the default window to `2026 → 9999`. | Medium | `occurred_at` bounded to [2000, now+5y] plus a `payments_created_at_sane` CHECK |
+| 5 | **The webhook answered 200 for payloads it then silently discarded.** Under at-least-once delivery the sender believes it delivered — a gateway quietly losing payment events is the exact failure this system exists to make visible. | Medium | Kind-specific payload validated at the edge; unprocessable input is a 400 the sender can act on |
+| 6 | **Unbounded request body.** `c.req.text()` buffered whatever arrived before the signature was checked. | Medium | 64 KB cap, checked on `Content-Length` before the body is read and again after |
+| 7 | **`/metrics/drift` cost ~750 ms and the dashboard called it every render** — an unauthenticated scan of every payment across seven dimensions, triggerable by holding down refresh. | Medium | 15 s TTL cache with request coalescing; **0.84 s → 0.0005 s**. Invalidated by a recompute |
+| 8 | **A one-character `WEBHOOK_SECRET` was accepted.** A signing key short enough to guess is the same as no signature. | Low | Minimum 16 characters, enforced at boot |
+
+`measureDrift`'s `from` is concatenated into raw SQL (the fragment spans a
+`UNION ALL`). It was already effectively safe, but it now normalises through
+`Date.parse` explicitly and **throws** on unparseable input rather than reaching
+the database — asserted with a `'; DROP TABLE payments; --` payload.
+
+### Accepted, not fixed
+
+- **No authentication on the metrics API, and `merchant_id` reads any tenant's
+  data.** §3 puts auth and multi-tenancy enforcement explicitly out of scope for
+  the MVP (single hardcoded merchant switcher). This is a real gap for anything
+  beyond a local demo and is called out in the README, not silently left.
+- **`processed_events` and `outbox` are never pruned.** `processed_events` is at
+  292k rows / 37 MB after one seed and grows with every event forever. Correct
+  but unbounded; a retention sweep is operational work this build does not need
+  over a 7-day simulated window.
+
+### Verified sound, no change needed
+
+Parameterised SQL everywhere outside the one hardened path · HMAC over the
+**raw** body with a constant-time compare · replay of a captured request is a
+no-op by `UNIQUE(event_id)` · error responses carry a code and a request id,
+never a stack or driver text · secrets redacted in logs by key, so a careless
+call site fails safe · CORS is an allowlist, not an echo.
+
+---
+
 ## Phase status legend
 
 `TODO` · `WIP` · `DONE` · `CUT` (see §16 cut order)
@@ -318,22 +362,57 @@ scripts name their own paths.
 
 ## P5 — Analytics and metrics
 
-**Status:** TODO
+**Status:** DONE — 26 integration tests, stable over 8 consecutive runs
 
-- `app/analytics.ts` — incremental rollups in the same transaction as their
-  idempotency marker, plus a recompute sweep; the delta is **drift**
-- `/api/v1/metrics/{summary,timeseries,breakdown,acceptance}`
-- `/` Command Center: four tiles, the domestic vs international acceptance strip,
-  the drift indicator
+- `app/analytics.ts` — incremental rollups written **in the same transaction as
+  the projection that caused them**, a full recompute, and a drift measurement
+  that reports without repairing
+- `app/recompute.ts` / `bun rollups:recompute` — repairing drift is a
+  deliberate command, never a side effect of noticing it
+- `db/queries.ts` — §10's metric definitions in SQL
+- `/api/v1/merchants`, `/api/v1/metrics/{summary,acceptance,timeseries,breakdown,drift}`
+- `/` Command Center: four tiles, the acceptance strip, the drift indicator, a
+  volume panel and a by-method table
 
-**Gate:** `/` shows four tiles with real numbers and drift 0 ·
-`recovery_rate` is recomputable from the two amounts printed beside it ·
-`recoverable_revenue` is `null` with `recoverable_estimated: false` — never 0 ·
-drift is **displayed, not corrected**.
+**Gate:** four tiles with real numbers · **drift 0** across 165,902 rollup rows ·
+`recovery_rate` printed beside the two amounts it was divided from ·
+`recoverable_revenue` is `null` with `recoverable_estimated: false`, never 0 ·
+drift displayed, not corrected.
 
-**Metric definitions are §10's table verbatim.** The two revenue columns are
-mutually exclusive by construction; `revenue_recovered` reads
-`payment_state_transitions`, not current state.
+**On screen, matching §13 step 2's script:** Revenue at Risk **₹2.4Cr** ·
+domestic **93.1%** · international **81.4%** · gap **11.7 pts / ₹84.3L**.
+
+### A money bug the tests caught
+
+`sum()` over a `BIGINT` column returns `numeric`, which postgres.js hands back
+as a **string**. Every money figure was arriving as text, so
+`revenue_recovered + revenue_at_risk` evaluated to `"0" + "2400918253"` =
+`"02400918253"` — the `recovery_rate` denominator, silently. Every money `sum()`
+is now cast `::bigint`, and a regression test asserts `typeof … === 'number'`
+across summary, acceptance, breakdown, timeseries and drift.
+
+This is exactly what invariant 5 exists to prevent, and it was invisible until
+something divided by it.
+
+### Two more real bugs
+
+1. **`recomputeRollups` collided with itself.** The `DELETE` lived in a
+   data-modifying CTE beside the `INSERT`. Every CTE in a statement sees the
+   same snapshot and they are **not ordered relative to one another**, so the
+   insert hit rows the delete had not yet removed:
+   `duplicate key value violates unique constraint "metrics_rollup_pkey"`.
+   Now `DELETE` then `INSERT`, two statements in one transaction.
+2. **Tests corrupted the seeded rollups.** Deleting a test payment does not
+   undo the rollup row it contributed, so orphaned rows showed up as drift in
+   later tests that had done nothing wrong. Both integration files now live in
+   2027, outside any seeded dataset, and clear rollups for that range;
+   `measureDrift` takes an optional window so a test only measures its own.
+   Verified: eight consecutive runs leave global drift at **0**.
+
+**Also fixed:** both integration files shared the `sql` pool singleton and the
+first file's `afterAll` closed it out from under the second (`CONNECTION_ENDED`
+in a file that did nothing wrong). Teardown now happens once, in a preloaded
+`test/setup.ts`.
 
 ---
 

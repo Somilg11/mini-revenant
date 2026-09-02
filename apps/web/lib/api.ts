@@ -95,3 +95,107 @@ export interface Ready {
     llm: { enabled: boolean; provider: string; model: string | null; reason?: string };
   };
 }
+
+// ── Metrics (§10) ────────────────────────────────────────────────────────────
+
+export interface MetricWindow {
+  from: string;
+  to: string;
+  merchant_id: string | null;
+}
+
+export interface Summary {
+  window: MetricWindow | null;
+  revenue_at_risk_paise: number;
+  revenue_recovered_paise: number;
+  /** null with `recoverable_estimated: false` until a model has scored a case. */
+  recoverable_revenue_paise: number | null;
+  recoverable_estimated: boolean;
+  recoverable_open_cases: number;
+  recovery_rate: number | null;
+  recovery_rate_inputs: { numerator_paise: number; denominator_paise: number };
+  counts: { attempts: number; successes: number; failures: number; abandoned: number };
+  failure_rate: number | null;
+  failure_rate_inputs: { numerator: number; denominator: number };
+  attribution: {
+    direct_paise: number;
+    assisted_paise: number;
+    organic_paise: number;
+    verified: number;
+    attributed: boolean;
+  };
+  probability_source_mix: { model: number; baseline: number };
+}
+
+export interface AcceptanceSegment {
+  segment: 'domestic' | 'international';
+  attempts: number;
+  successes: number;
+  acceptance_rate: number | null;
+  gross_amount_paise: number;
+  captured_amount_paise: number;
+}
+
+export interface Acceptance {
+  window: MetricWindow | null;
+  segments: AcceptanceSegment[];
+  gap: { points: number; value_paise: number } | null;
+}
+
+export interface Drift {
+  rows: number;
+  attempts: number;
+  successes: number;
+  failures: number;
+  grossAmountPaise: number;
+  checkedAt: string;
+}
+
+export interface BreakdownRow {
+  dimension_value: string;
+  attempts: number;
+  successes: number;
+  failures: number;
+  abandoned: number;
+  gross_amount_paise: number;
+  failed_amount_paise: number;
+  failure_rate: number | null;
+  acceptance_rate: number | null;
+}
+
+export interface Breakdown {
+  window: MetricWindow | null;
+  dimension: string;
+  rows: BreakdownRow[];
+}
+
+/**
+ * Fetches everything the Command Center needs, tolerating a dead API.
+ *
+ * One failed panel must not blank the page: a dashboard that shows nothing
+ * because one query timed out is less useful than one that shows what it has
+ * and says what it could not get.
+ */
+export async function fetchDashboard(): Promise<{
+  ready: Ready | null;
+  summary: Summary | null;
+  acceptance: Acceptance | null;
+  drift: Drift | null;
+  breakdown: Breakdown | null;
+  error: string | null;
+}> {
+  const [ready, summary, acceptance, drift, breakdown] = await Promise.all([
+    api<Ready>('/ready').catch(() => null),
+    api<Summary>('/api/v1/metrics/summary').catch(() => null),
+    api<Acceptance>('/api/v1/metrics/acceptance').catch(() => null),
+    api<Drift>('/api/v1/metrics/drift').catch(() => null),
+    api<Breakdown>('/api/v1/metrics/breakdown?dimension=method').catch(() => null),
+  ]);
+
+  const error =
+    summary === null && acceptance === null
+      ? `cannot reach the API at ${BASE} — is it running? (bun dev)`
+      : null;
+
+  return { ready, summary, acceptance, drift, breakdown, error };
+}

@@ -12,7 +12,16 @@ export const CUSTOMER = 'cus_test_p3';
  * `TRUNCATE ... CASCADE` of everything: merchants come from a migration and
  * dropping them would make the suite depend on re-running migrations.
  */
+/**
+ * Tests live in 2027, outside any seeded dataset, so a seeded database is
+ * neither depended on nor disturbed. Rollups are cleared for that whole range:
+ * deleting a payment row does not undo the rollup it contributed, and an
+ * orphaned rollup row shows up as drift in a later test that did nothing wrong.
+ */
+export const TEST_EPOCH = '2027-01-01T00:00:00.000Z';
+
 export async function resetFixtures(): Promise<void> {
+  await sql`DELETE FROM metrics_rollup WHERE bucket_start >= ${TEST_EPOCH}`;
   await sql`DELETE FROM payment_state_transitions WHERE payment_id LIKE 'pay_t_%'`;
   await sql`DELETE FROM payment_events           WHERE payment_id LIKE 'pay_t_%'`;
   await sql`DELETE FROM payments                 WHERE id         LIKE 'pay_t_%'`;

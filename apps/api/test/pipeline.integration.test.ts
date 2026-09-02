@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
-import { sql, closeDb } from '../src/db/client.ts';
+import { sql } from '../src/db/client.ts';
 import { drainOnce, registerHandler } from '../src/app/relay.ts';
 import { project } from '../src/app/projector.ts';
 import { ingest } from '../src/app/ingest.ts';
@@ -19,13 +19,13 @@ import {
 
 const app = createApp();
 
-const T = (mins: number) => new Date(Date.parse('2026-07-25T10:00:00.000Z') + mins * 60_000).toISOString();
+// 2027, outside any seeded dataset — see TEST_EPOCH in helpers.
+const T = (mins: number) => new Date(Date.parse('2027-06-01T10:00:00.000Z') + mins * 60_000).toISOString();
 
 beforeAll(assertNoCompetingRelay);
 beforeEach(resetFixtures);
 afterAll(async () => {
   await resetFixtures();
-  await closeDb();
 });
 
 /** Drains until the queue is empty, so a test never depends on one batch. */
