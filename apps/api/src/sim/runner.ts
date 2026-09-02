@@ -2,7 +2,9 @@ import { config } from '../config.ts';
 import { sql } from '../db/client.ts';
 import { ingestBatch } from '../app/ingest.ts';
 import { pendingOutbox } from '../app/relay.ts';
+import { ABANDONMENT_IDLE_MINUTES } from '../domain/payment-state.ts';
 import { sweepAbandoned } from '../app/abandonment.ts';
+import { catchUp as detectionCatchUp } from '../app/detection.ts';
 import { listMerchants } from '../db/queries.ts';
 import { log } from '../lib/logger.ts';
 import { SimClock, type ClockState } from './clock.ts';
@@ -56,6 +58,8 @@ export interface RunnerState {
     endedAt: string;
     affectedPayments: number;
   }[];
+  /** Deliberately unlabelled — a detector that fires on these is wrong (§8.4). */
+  noiseWindows: { startedAt: string; endedAt: string }[];
 }
 
 class Runner {
@@ -67,6 +71,15 @@ class Runner {
   private ticking = false;
   private stopped = true;
   private lastSweepMs = 0;
+  private lastDetectionMs = 0;
+  /**
+   * How far the abandonment sweep has actually settled, which is the real bound
+   * on what detection may judge — not a fixed offset from the clock. A tick at
+   * 300× advances simulated time by 75 minutes, so the sweep runs far less
+   * often than every five simulated minutes and a fixed offset lets detection
+   * judge buckets whose abandoned counts have not landed.
+   */
+  private abandonmentSettledMs = 0;
 
   /** Builds the dataset and the clock. Cheap enough to call on every reset. */
   private async prepare(): Promise<void> {
@@ -94,6 +107,8 @@ class Runner {
     const windowStart = this.events[0]?.occurredAt ?? params.endsAt;
     this.clock = new SimClock(windowStart, params.endsAt, config.SIM_SPEED);
     this.lastSweepMs = Date.parse(windowStart);
+    this.lastDetectionMs = Date.parse(windowStart);
+    this.abandonmentSettledMs = Date.parse(windowStart);
 
     log.info('runner prepared', {
       payments: this.dataset.payments.length,
@@ -153,6 +168,8 @@ class Runner {
     this.cursor = 0;
     this.clock!.reset();
     this.lastSweepMs = Date.parse(this.clock!.state().startsAt);
+    this.lastDetectionMs = this.lastSweepMs;
+    this.abandonmentSettledMs = this.lastSweepMs;
     log.info('simulator reset', { customers: d.customers.length, incidents: d.incidents.length });
     return this.state();
   }
@@ -244,9 +261,9 @@ class Runner {
       if (this.cursor >= this.events.length && this.clock!.isFinished()) {
         const pending = await pendingOutbox();
         if (pending === 0) {
+          await this.finalise();
           this.stopped = true;
           this.clock!.pause();
-          await this.insertPendingLabels();
           log.info('simulator finished', { emitted: this.cursor });
           return;
         }
@@ -314,11 +331,45 @@ class Runner {
    * ordered within a payment while staying parallel across payments.
    */
   private async sweep(nowMs: number): Promise<void> {
+    // Abandonment first, detection second: detection is bounded by how far the
+    // abandonment sweep has settled, so sweeping after would always leave
+    // detection one interval behind for no reason.
+    await this.sweepAbandonment(nowMs);
+    await this.runDetection(nowMs);
+  }
+
+  private async runDetection(nowMs: number): Promise<void> {
+    // Detection runs every 5 simulated minutes (§9) — the rollup bucket size,
+    // so each sweep sees exactly one new bucket. It is driven by how far the
+    // *data* has got, not by the clock: the relay trails the clock by whatever
+    // the outbox depth happens to be, and sweeping ahead of the data evaluates
+    // empty windows and then never revisits them.
+    if (nowMs - this.lastDetectionMs >= 5 * 60_000) {
+      try {
+        // Only judge buckets the abandonment sweep has already settled.
+        const { sweptTo } = await detectionCatchUp(new Date(this.lastDetectionMs), {
+          until: new Date(this.abandonmentSettledMs),
+        });
+        this.lastDetectionMs = sweptTo.getTime();
+      } catch (err) {
+        // Detection failing must not stop the replay: the pipeline is the
+        // thing under test, and a stalled clock hides that it still works.
+        log.error('detection sweep failed', { err });
+      }
+    }
+
+  }
+
+  private async sweepAbandonment(nowMs: number): Promise<void> {
     // Abandonment is decided in simulated minutes, so the sweep runs on
-    // simulated time. Every 30 simulated minutes is enough.
-    if (nowMs - this.lastSweepMs >= 30 * 60_000) {
+    // simulated time. It runs at the bucket cadence rather than every 30
+    // simulated minutes: at the coarser interval the flags land in bursts, and
+    // a bucket's abandoned count arrives long after the detector judged it.
+    if (nowMs - this.lastSweepMs >= 5 * 60_000) {
       this.lastSweepMs = nowMs;
       await sweepAbandoned(new Date(nowMs));
+      // Everything older than the idle window now carries its final verdict.
+      this.abandonmentSettledMs = nowMs - ABANDONMENT_IDLE_MINUTES * 60_000;
       await this.insertPendingLabels();
     }
   }
@@ -353,6 +404,35 @@ class Runner {
         // yet. The next sweep picks them up; the labels are not lost.
       });
     }
+  }
+
+  /**
+   * Runs the sweeps one last time, after the outbox is empty.
+   *
+   * The periodic sweeps are gated on **simulated** time having advanced, and
+   * while the runner drains its final backlog the clock is already parked at
+   * the end of the window — so that condition fires exactly once and every
+   * payment projected afterwards is never swept. That left most genuinely
+   * abandoned payments unflagged (237 of 1,312), which in turn hid the
+   * abandonment spike from the detector entirely.
+   */
+  private async finalise(): Promise<void> {
+    const endMs = Date.parse(this.clock!.state().endsAt);
+    const abandoned = await sweepAbandoned(new Date(endMs));
+    this.abandonmentSettledMs = endMs;
+    await this.insertPendingLabels();
+    // Detection is held behind the abandonment verdict, so it runs last and is
+    // allowed as many buckets as it needs to reach the end.
+    const { result } = await detectionCatchUp(new Date(this.lastDetectionMs), {
+      until: new Date(endMs),
+      maxBuckets: 4000,
+    });
+    this.lastDetectionMs = endMs;
+    log.info('simulator finalised', {
+      abandoned,
+      incidentsOpened: result.opened.length,
+      incidentsResolved: result.resolved.length,
+    });
   }
 
   /** Lets the single relay catch up, e.g. after a jump fast-forwards a backlog. */
@@ -392,6 +472,7 @@ class Runner {
         endedAt: i.endedAt,
         affectedPayments: i.affectedPayments,
       })),
+      noiseWindows: this.dataset?.noiseWindows ?? [],
     };
   }
 

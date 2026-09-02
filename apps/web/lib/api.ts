@@ -199,3 +199,85 @@ export async function fetchDashboard(): Promise<{
 
   return { ready, summary, acceptance, drift, breakdown, error };
 }
+
+// ── Incidents (§11.2) ────────────────────────────────────────────────────────
+
+export interface Gate {
+  gate: string;
+  passed: boolean;
+  value: number;
+  threshold: number;
+  detail: string;
+}
+
+export interface Incident {
+  id: string;
+  merchant_id: string | null;
+  status: 'OPEN' | 'RESOLVED';
+  dimension: string;
+  dimension_value: string;
+  opened_at: string;
+  resolved_at: string | null;
+  baseline_rate: number;
+  current_rate: number;
+  z_score: number;
+  gates: Gate[];
+  affected_payments: number;
+  revenue_at_risk_paise: number;
+  narrative: string | null;
+  narrative_source: 'llm' | 'template' | null;
+}
+
+export interface DetectionMatch {
+  groundTruthId: string;
+  kind: string;
+  startedAt: string;
+  endedAt: string;
+  dimensions: Record<string, string>;
+  affectedPayments: number;
+  detected: boolean;
+  onCorrectDimension: boolean;
+  detectedDimension: string | null;
+  corroboratingDetections: number;
+  allDimensions: string[];
+  missReason: string | null;
+}
+
+export interface Evaluation {
+  detection: {
+    precision: number | null;
+    recall: number | null;
+    true_positives: number;
+    false_positives: number;
+    false_negatives: number;
+    incidents_opened: number;
+    matches: DetectionMatch[];
+    unmatched: { id: string; dimension: string; dimensionValue: string; openedAt: string }[];
+  };
+  noise_windows: {
+    clean: boolean;
+    windows: { startedAt: string; endedAt: string; firedIncidents: number }[];
+  };
+}
+
+export const fetchIncidents = (status = 'ALL') =>
+  api<{ incidents: Incident[] }>(`/api/v1/incidents?status=${status}`).catch(() => ({ incidents: [] }));
+
+export const fetchIncident = (id: string) =>
+  api<{ incident: Incident }>(`/api/v1/incidents/${id}`);
+
+export const fetchEvaluation = () =>
+  api<Evaluation>('/api/v1/evaluation').catch((): Evaluation | null => null);
+
+export interface IncidentSeries {
+  incident_id: string;
+  dimension: string;
+  dimension_value: string;
+  baseline_rate: number;
+  opened_at: string;
+  resolved_at: string | null;
+  points: { start: string; attempts: number; failures: number; failure_rate: number | null }[];
+}
+
+export const fetchIncidentSeries = (id: string) =>
+  api<IncidentSeries>(`/api/v1/incidents/${id}/timeseries`).catch((): IncidentSeries | null => null);

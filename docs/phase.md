@@ -485,21 +485,79 @@ names the fix (`bun sim:clear`).
 
 ## P7 — Detection
 
-**Status:** TODO
+**Status:** DONE — 185 unit + 51 integration; precision 1.000, noise windows clean
 
-- `domain/detector.ts` — EWMA + z-score, the **five gates** of §7.3 (volume
-  floor, absolute lift, relative lift, z-score, sustained-ness); fire only if
-  every gate passes
-- `app/detection.ts` — sweep every 5 simulated minutes under
-  `pg_advisory_xact_lock`, opens/resolves incidents, 60-simulated-minute
-  suppression per slice
-- `/incidents` list + detail with the gate checklist
+- `domain/detector.ts` — EWMA + z-score behind the **five gates** of §7.3, every
+  gate evaluated (none short-circuits) and each carrying the number it was
+  compared against
+- `app/detection.ts` — sweep under `pg_try_advisory_xact_lock`, opens and
+  resolves incidents, 60-simulated-minute suppression per slice, plus `catchUp`
+- `app/evaluation.ts` — precision, recall and the noise-window test
+- `/api/v1/incidents`, `/api/v1/incidents/:id`, `.../timeseries`, `/api/v1/evaluation`
+- Web: `/incidents` with the scoreboard and the answer-key table, `/incidents/[id]`
+  with the five gates and the slice's own series
 
-**Gate:** incidents open on the injected windows and **not** on the two noise
-windows · precision and recall printed against `ground_truth_incidents` ·
-**the `INTERNATIONAL_3DS_BLOCK` window is detected on the `is_international`
-dimension and missed on the aggregate series** — that contrast is the demo, so
-it gets its own explicit test (§14).
+**Gate:** the centrepiece incident is **detected on `is_international=true`**
+(45.7% against a 13.4% baseline, z = 5.6, all five gates passing) and **not on
+the aggregate** · **zero false positives** across a full replay · **both
+unlabelled noise windows stayed clean** — that is the half of the claim that
+costs something, since a detector firing on everything also "finds all six".
+
+### Recall is 3 of 6, and all three misses are the detector being right
+
+Reporting a bare recall figure would be misleading in both directions, so each
+miss carries its reason in the API and on the page:
+
+| Missed | Why |
+|---|---|
+| `HIGH_VALUE_FAILURES` | ~10 attempts per 15-minute window against a floor of 20. The degradation is real and large (≈60% against 11.5%) but six failures in ten attempts is not evidence. **The volume gate working, not failing.** |
+| `ABANDONMENT_SPIKE` | Four of five gates pass — 27.3% against 11.3%, 16 points, 2.4× — and only the z-score falls short at 3.7 against 5.0, because the slice carries ~55 attempts. Suggestive, not conclusive, and §7.3 is set to refuse suggestive. |
+| `CUSTOMER_COHORT` | `customer_cohort` is an **RCA** dimension (§7.4), not one the detector sweeps. It is only visible on the aggregate, where it is a 5.2-point wobble every gate correctly refuses. |
+
+All three would clear at roughly two to four times the dataset volume — the same
+tension already recorded in §0.1. Lowering a gate to score better would trade
+the zero-false-positive result for a higher recall number, which is the wrong
+trade for a system whose product is knowing when *not* to act.
+
+### Three bugs, each a variation on one mistake
+
+**Judging a window before its facts have arrived.**
+
+1. **Detection ran on the clock, not the data.** The replay emits at simulated
+   time T but the relay projects asynchronously, so every sweep evaluated a
+   window whose recent buckets were still empty, failed the volume gate, and —
+   because a sweep only looks forward — never revisited it. **Zero incidents
+   were detected across an entire replay.** `catchUp` now walks bucket by bucket
+   up to the newest bucket that actually holds data.
+2. **Abandonment verdicts landed after the verdict on them.** Abandonment is
+   decided 30 simulated minutes after a payment goes quiet, so a bucket's
+   abandoned count arrives long after its payments did. Detection is now bounded
+   by how far the abandonment sweep has actually settled, rather than by a fixed
+   offset from a clock that advances 75 simulated minutes per tick at 300×.
+3. **The run ended before its own sweeps did.** The periodic sweeps are gated on
+   simulated time advancing, and while the runner drains its final backlog the
+   clock is already parked at the end — so the condition fired once and every
+   payment projected afterwards was never swept. Only **237 of 1,312** abandoned
+   payments were flagged. A `finalise()` step now runs the sweeps once more
+   after the outbox empties; all 1,312 are flagged.
+
+### Two more, in the scoring and the dataset
+
+- **The noise windows overlapped the real incidents.** One sat exactly on top of
+  `INTERNATIONAL_3DS_BLOCK`, so the "7 incidents fired in a noise window" result
+  was measuring the real incident and the precision test was worth nothing. They
+  are now placed to avoid every injected window.
+- **Corroborating detections were scored as false positives.** A real
+  degradation lights up several slices — a UPI outage moves the banks that carry
+  UPI — and one-to-one attribution counted the extras as errors, dropping
+  precision to 0.138 and marking the *correct* `is_international` detection as a
+  false positive. Attribution is now by window, with `onCorrectDimension`
+  reported separately; picking the causal slice is what RCA does in P8.
+
+**Dataset change:** injected incidents now start on day 1 or later. The detector
+needs 24 hours of baseline, so an incident on day 0 was undetectable by
+construction and would have scored the detector as missing it for a reason that
+has nothing to do with detection.
 
 ---
 

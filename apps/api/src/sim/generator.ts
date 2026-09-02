@@ -477,11 +477,25 @@ export function generate(params: GeneratorParams): Dataset {
   });
 
   // Two unlabelled windows with mild fluctuation. A detector that fires on
-  // these is wrong, and without them "we detected all 5" means nothing (§8.4).
-  const noiseWindows = [0, 1].map((i) => {
-    const start = daytimeStart(rng, startsAt, endsAt, params.days, 10 + i, 2);
-    return { start, end: start + 2 * 3600_000 };
-  });
+  // these is wrong, and without them "we detected all 6" means nothing (§8.4).
+  //
+  // They must not overlap an injected window, or the incidents detected inside
+  // them are the real ones and the precision test measures nothing at all.
+  const noiseWindows: { start: number; end: number }[] = [];
+  for (let n = 0; n < 2 && noiseWindows.length < 2; ) {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const start = daytimeStart(rng, startsAt, endsAt, params.days, 10 + n + attempt * 3, 2);
+      const end = start + 2 * 3600_000;
+      const clashes = [...windows, ...noiseWindows].some(
+        (w) => start < ('end' in w ? w.end : 0) && end > ('start' in w ? w.start : 0),
+      );
+      if (!clashes) {
+        noiseWindows.push({ start, end });
+        break;
+      }
+    }
+    n += 1;
+  }
 
   // ── Outcomes ──────────────────────────────────────────────────────────────
   const failureRun = new Map<number, number>();
@@ -661,7 +675,11 @@ function daytimeStart(
   index: number,
   durationHours: number,
 ): number {
-  const day = index % days;
+  // Day 1 onwards, never day 0: the detector needs 24 hours of baseline before
+  // it can judge anything (§7.3), so an incident on the first day is
+  // undetectable by construction and would score every detector as a miss for
+  // a reason that has nothing to do with detection.
+  const day = 1 + (index % Math.max(1, days - 1));
   const dayStartUtc = startsAt + day * 24 * 3600_000;
   const istHour = rng.int(10, 18);
   const candidate = dayStartUtc + (istHour * 3600_000 - IST_OFFSET_MS);

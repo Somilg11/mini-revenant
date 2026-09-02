@@ -5,6 +5,7 @@ import { config } from '../config.ts';
 import { AppError, isConnectionError, publicMessage } from '../lib/errors.ts';
 import { log } from '../lib/logger.ts';
 import { health } from './routes/health.ts';
+import { incidents } from './routes/incidents.ts';
 import { metrics } from './routes/metrics.ts';
 import { sim } from './routes/sim.ts';
 import { stream } from './sse.ts';
@@ -67,6 +68,7 @@ export function createApp(): Hono<AppEnv> {
   app.route('/', health);
   app.route('/', webhooks);
   app.route('/', metrics);
+  app.route('/', incidents);
   app.route('/', sim);
   app.route('/', stream);
 

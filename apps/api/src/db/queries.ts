@@ -327,3 +327,169 @@ export async function breakdown(
     ORDER BY sum(r.attempts) DESC
   `;
 }
+
+// ── Detection (§7.3) ─────────────────────────────────────────────────────────
+
+export interface SliceKey {
+  dimension: string;
+  dimensionValue: string;
+}
+
+/**
+ * The slices carrying enough traffic to be worth evaluating.
+ *
+ * Summed across merchants: injected incidents are infrastructure-wide (§8.2),
+ * and scoping detection per tenant divides the affected traffic by the merchant
+ * count and produces "incidents" of four payments.
+ */
+export async function activeSlices(
+  from: string,
+  to: string,
+  minAttempts: number,
+  db: Sql = sql,
+): Promise<SliceKey[]> {
+  const rows = await db<{ dimension: string; dimension_value: string }[]>`
+    SELECT r.dimension, r.dimension_value
+    FROM metrics_rollup r
+    WHERE r.bucket_start >= ${from} AND r.bucket_start < ${to}
+    GROUP BY 1, 2
+    HAVING sum(r.attempts) >= ${minAttempts}
+  `;
+  return rows.map((r) => ({ dimension: r.dimension, dimensionValue: r.dimension_value }));
+}
+
+export interface SeriesBucket {
+  start: string;
+  attempts: number;
+  failures: number;
+}
+
+/**
+ * A dense 5-minute series for one slice.
+ *
+ * `generate_series` fills the gaps: a bucket with no traffic must appear as
+ * zero rather than be missing, or the detector's window silently spans a longer
+ * period than it thinks and the sustained-ness gate reads the wrong buckets.
+ */
+export async function sliceSeries(
+  slice: SliceKey,
+  from: string,
+  to: string,
+  db: Sql = sql,
+): Promise<SeriesBucket[]> {
+  return db<SeriesBucket[]>`
+    SELECT
+      g.bucket::text AS start,
+      COALESCE(sum(r.attempts), 0)::int AS attempts,
+      COALESCE(sum(r.failures) + sum(r.abandoned), 0)::int AS failures
+    FROM generate_series(
+      ${from}::timestamptz, ${to}::timestamptz - interval '5 minutes', interval '5 minutes'
+    ) AS g(bucket)
+    LEFT JOIN metrics_rollup r
+      ON r.bucket_start = g.bucket
+     AND r.dimension = ${slice.dimension}
+     AND r.dimension_value = ${slice.dimensionValue}
+    GROUP BY g.bucket
+    ORDER BY g.bucket
+  `;
+}
+
+export interface IncidentRow {
+  id: string;
+  merchant_id: string | null;
+  status: 'OPEN' | 'RESOLVED';
+  dimension: string;
+  dimension_value: string;
+  opened_at: string;
+  resolved_at: string | null;
+  baseline_rate: number;
+  current_rate: number;
+  z_score: number;
+  gates: unknown;
+  affected_payments: number;
+  revenue_at_risk_paise: number;
+  root_cause: unknown;
+  narrative: string | null;
+  narrative_source: string | null;
+}
+
+export async function openIncidents(db: Sql = sql): Promise<IncidentRow[]> {
+  return db<IncidentRow[]>`
+    SELECT * FROM incidents WHERE status = 'OPEN' ORDER BY opened_at DESC`;
+}
+
+export async function listIncidents(
+  status: 'OPEN' | 'RESOLVED' | 'ALL',
+  limit: number,
+  db: Sql = sql,
+): Promise<IncidentRow[]> {
+  return db<IncidentRow[]>`
+    SELECT * FROM incidents
+    ${status === 'ALL' ? db`` : db`WHERE status = ${status}`}
+    ORDER BY opened_at DESC
+    LIMIT ${limit}`;
+}
+
+export async function getIncident(id: string, db: Sql = sql): Promise<IncidentRow | null> {
+  const [row] = await db<IncidentRow[]>`SELECT * FROM incidents WHERE id = ${id}`;
+  return row ?? null;
+}
+
+/**
+ * Payments in a slice during a window — what the incident is costing.
+ *
+ * The dimension is matched by an explicit CASE rather than dynamic SQL, so no
+ * caller can steer this at a column.
+ */
+export async function sliceExposure(
+  slice: SliceKey,
+  from: string,
+  to: string,
+  db: Sql = sql,
+): Promise<{ affected: number; failed: number; atRiskPaise: number }> {
+  const [row] = await db<{ affected: number; failed: number; at_risk: number }[]>`
+    SELECT
+      count(*)::int AS affected,
+      count(*) FILTER (WHERE p.state <> 'CAPTURED')::int AS failed,
+      COALESCE(sum(p.amount_paise) FILTER (WHERE p.state <> 'CAPTURED'), 0)::bigint AS at_risk
+    FROM payments p
+    WHERE p.created_at >= ${from} AND p.created_at < ${to}
+      AND CASE ${slice.dimension}
+            WHEN 'all'              THEN TRUE
+            WHEN 'method'           THEN p.method::text = ${slice.dimensionValue}
+            WHEN 'bank'             THEN COALESCE(p.bank, 'none') = ${slice.dimensionValue}
+            WHEN 'is_international' THEN (CASE WHEN p.is_international THEN 'true' ELSE 'false' END) = ${slice.dimensionValue}
+            WHEN 'card_network'     THEN COALESCE(p.card_network, 'none') = ${slice.dimensionValue}
+            WHEN 'card_country'     THEN COALESCE(p.card_country, 'none') = ${slice.dimensionValue}
+            WHEN 'amount_band'      THEN (CASE
+                WHEN p.amount_paise >= 5000000 THEN '>50k'
+                WHEN p.amount_paise >= 1000000 THEN '10k-50k'
+                WHEN p.amount_paise >=  200000 THEN '2k-10k'
+                WHEN p.amount_paise >=   50000 THEN '500-2k'
+                ELSE '<500' END) = ${slice.dimensionValue}
+            ELSE FALSE
+          END
+  `;
+  return {
+    affected: row?.affected ?? 0,
+    failed: row?.failed ?? 0,
+    atRiskPaise: row?.at_risk ?? 0,
+  };
+}
+
+export interface GroundTruthIncidentRow {
+  id: string;
+  kind: string;
+  started_at: string;
+  ended_at: string;
+  dimensions: Record<string, string>;
+  affected_payments: number;
+  detected_incident_id: string | null;
+}
+
+export async function groundTruthIncidents(db: Sql = sql): Promise<GroundTruthIncidentRow[]> {
+  return db<GroundTruthIncidentRow[]>`
+    SELECT id, kind, started_at::text, ended_at::text, dimensions, affected_payments,
+           detected_incident_id
+    FROM ground_truth_incidents ORDER BY started_at`;
+}

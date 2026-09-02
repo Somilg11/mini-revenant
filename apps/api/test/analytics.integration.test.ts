@@ -24,7 +24,10 @@ const WINDOW: Window = { from: '2027-03-01T00:00:00.000Z', to: '2027-04-01T00:00
 const CUSTOMER = 'cus_analytics_p5';
 
 async function reset(): Promise<void> {
-  await sql`DELETE FROM metrics_rollup WHERE bucket_start >= ${WINDOW.from}`;
+  // Bounded to this file's own window: deleting everything after it wipes
+  // rollups belonging to other test files while leaving their payments, which
+  // shows up as drift in a test that did nothing wrong.
+  await sql`DELETE FROM metrics_rollup WHERE bucket_start >= ${WINDOW.from} AND bucket_start < ${WINDOW.to}`;
   await sql`DELETE FROM payment_state_transitions WHERE payment_id LIKE 'pay_an_%'`;
   await sql`DELETE FROM payment_events           WHERE payment_id LIKE 'pay_an_%'`;
   await sql`DELETE FROM payments                 WHERE id         LIKE 'pay_an_%'`;
