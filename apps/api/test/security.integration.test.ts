@@ -208,10 +208,17 @@ describe('drift detection has no blind spots', () => {
     expect(String(err)).toContain('invalid `from`');
   });
 
-  test('a quote-bearing but parseable window cannot inject', async () => {
+  test('a parseable window is used, and the table it names survives', async () => {
+    // Proves the table is still there and still queryable after the injection
+    // attempt above — without depending on a seeded dataset being present.
+    const id = uid('pay_sec_');
+    await project(createdEvent(id, T(0), { customer_id: CUSTOMER }));
+
     const drift = await measureDrift({ from: '2028-01-01T00:00:00Z' });
     expect(drift.rows).toBeGreaterThanOrEqual(0);
-    const [row] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM payments`;
-    expect(row!.n).toBeGreaterThan(0);
+
+    const [row] = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM payments WHERE id = ${id}`;
+    expect(row!.n).toBe(1);
   });
 });

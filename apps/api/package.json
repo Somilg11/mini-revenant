@@ -12,7 +12,8 @@
     "whatif": "bun --env-file=../../.env src/sim/whatif.ts",
     "typecheck": "tsc --noEmit",
     "test:integration": "bun test --env-file=../../.env --preload ./test/setup.ts test/",
-    "rollups:recompute": "bun --env-file=../../.env src/app/recompute.ts"
+    "rollups:recompute": "bun --env-file=../../.env src/app/recompute.ts",
+    "sim:clear": "bun --env-file=../../.env src/sim/clear.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.48",

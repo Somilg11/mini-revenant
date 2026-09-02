@@ -118,7 +118,11 @@ async function loadEvents(dataset: Dataset): Promise<void> {
           event_id: e.eventId,
           payment_id: e.paymentId,
           kind: e.kind,
-          payload: JSON.stringify(e.data),
+          // `sql.json(...)`, not `JSON.stringify(...)`: the column is JSONB, and handing
+          // it a plain string stores a JSON *string* containing JSON rather than an
+          // object. `payload->>'x'` then returns NULL for every key and the relay's
+          // schema parse fails with "expected object, received string".
+          payload: sql.json(e.data as never),
           occurred_at: e.occurredAt,
         })),
       )}

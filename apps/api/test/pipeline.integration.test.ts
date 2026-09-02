@@ -345,3 +345,35 @@ describe('customer fixture sanity', () => {
     expect(await countRows('customers', 'id', CUSTOMER)).toBe(1);
   });
 });
+
+describe('concurrent delivery preserves per-payment event order', () => {
+  test('a payment\'s whole lifecycle lands even when many payments interleave', async () => {
+    // The relay dispatches handlers concurrently. Without partitioning by
+    // payment, `payment.created` and `payment.attempted` for the same payment
+    // can land on different workers and the second can win the row lock first:
+    // the attempt then arrives at a payment that does not exist, dead-letters,
+    // and the payment is stranded mid-lifecycle. A row lock serialises access,
+    // not arrival order.
+    const ids = Array.from({ length: 30 }, () => uid('pay_t_'));
+
+    // Interleaved exactly as the replay emits them — ordered by time across
+    // payments, not grouped by payment.
+    for (const id of ids) await ingest(createdEvent(id, T(0)));
+    for (const id of ids) await ingest(event(id, 'payment.attempted', T(1)));
+    for (const id of ids) await ingest(event(id, 'payment.authorized', T(2)));
+    for (const id of ids) await ingest(event(id, 'payment.captured', T(2)));
+
+    await drainAll();
+
+    const [dead] = await sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM outbox
+      WHERE dead_lettered AND payload->>'payment_id' IN ${sql(ids)}`;
+    expect(dead?.n).toBe(0);
+
+    const rows = await sql<{ state: string }[]>`
+      SELECT state FROM payments WHERE id IN ${sql(ids)}`;
+    expect(rows).toHaveLength(ids.length);
+    // Every one reached the end of its lifecycle, not a state part-way through.
+    expect(rows.filter((r) => r.state !== 'CAPTURED')).toEqual([]);
+  });
+});

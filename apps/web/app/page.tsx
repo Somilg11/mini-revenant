@@ -1,4 +1,8 @@
 import { fetchDashboard } from '@/lib/api';
+import { simApi, type SimState } from '@/lib/sim';
+import { SimControlBar } from '@/components/SimControlBar';
+import { LiveFeed } from '@/components/LiveFeed';
+import { FailureRateChart } from '@/components/FailureRateChart';
 import { formatInrCompact, formatPct, formatCount, exactPaise } from '@/lib/format';
 import { MetricTile } from '@/components/MetricTile';
 import { AcceptanceStrip } from '@/components/AcceptanceStrip';
@@ -18,7 +22,10 @@ export const dynamic = 'force-dynamic';
  * P6, when there is a clock to drive them.
  */
 export default async function Home() {
-  const { ready, summary, acceptance, drift, breakdown, error } = await fetchDashboard();
+  const [{ ready, summary, acceptance, drift, breakdown, error }, sim] = await Promise.all([
+    fetchDashboard(),
+    simApi.state().catch((): SimState | null => null),
+  ]);
 
   const dataset = ready?.checks.dataset ?? null;
   const seeded = dataset?.seeded ?? false;
@@ -49,6 +56,8 @@ export default async function Home() {
           )}
         </div>
       </header>
+
+      <SimControlBar initial={sim} />
 
       {error && <Banner tone="danger" title="API unreachable" body={error} />}
       {!error && dbDown && (
@@ -116,6 +125,11 @@ export default async function Home() {
 
           <AcceptanceStrip acceptance={acceptance} />
 
+          <section style={{ display: 'grid', gridTemplateColumns: '1.35fr 1fr', gap: 8, marginTop: 8 }}>
+            <FailureRateChart incidents={sim?.incidents ?? []} running={sim?.clock.running ?? false} />
+            <LiveFeed />
+          </section>
+
           <section style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8 }}>
             <div className="card">
               <div className="label">Volume</div>
@@ -165,7 +179,9 @@ export default async function Home() {
           <p style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 16, lineHeight: 1.7 }}>
             Every figure is computed from <span className="mono">payment_events</span>, the source of
             truth. Hover any amount for its exact value in paise. Rates print the two integers they
-            were divided from. Live feed, failure-rate chart and simulator controls arrive in P6.
+            were divided from. The simulated clock is held back whenever the replay cannot keep up,
+            so progress always reflects data that exists. Incidents, recovery cases and the policy
+            gate arrive in P7–P12.
           </p>
         </>
       )}

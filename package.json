@@ -25,7 +25,8 @@
     "check": "bun run lint && bun run typecheck && bun run test",
     "test:integration": "bun run --cwd apps/api test:integration",
     "test:all": "bun run test && bun run test:integration",
-    "rollups:recompute": "bun run --cwd apps/api rollups:recompute"
+    "rollups:recompute": "bun run --cwd apps/api rollups:recompute",
+    "sim:clear": "bun run --cwd apps/api sim:clear"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

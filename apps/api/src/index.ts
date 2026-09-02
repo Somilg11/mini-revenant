@@ -2,6 +2,8 @@ import { config, redacted } from './config.ts';
 import { closeDb } from './db/client.ts';
 import { migrate } from './db/migrate.ts';
 import { startRelay, stopRelay } from './app/relay.ts';
+import { startListener, stopListener } from './db/notify.ts';
+import { runner } from './sim/runner.ts';
 import { createApp } from './http/app.ts';
 import { log } from './lib/logger.ts';
 import { installSignalHandlers, onShutdown, shutdown } from './lib/shutdown.ts';
@@ -31,8 +33,13 @@ try {
 // Started after the migrations so the relay never queries a table that does
 // not exist yet. Registered before the server binds, so a shutdown during
 // startup still unwinds it.
+onShutdown('simulator', () => runner.shutdown());
+onShutdown('listener', stopListener);
 onShutdown('relay', stopRelay);
 startRelay();
+
+// One dedicated connection listens for `revenant_events` and fans out to SSE.
+await startListener();
 
 const app = createApp();
 

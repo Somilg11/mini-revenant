@@ -29,8 +29,14 @@ bun db:up          # starts Postgres in Docker, waits for healthy
 bun dev            # api on :8090, web on :3000
 ```
 
-Open **http://localhost:3000**. With an empty database you get an empty
-dashboard and a "no dataset" banner — never a crash, never a fake number. Then:
+Open **http://localhost:3000** and press **▶ Play**: seven simulated days of
+payments replay through the real ingest path in about five minutes, the live
+feed streams, and the failure-rate chart fills with the injected incident
+windows shaded.
+
+With an empty database and the simulator idle you get an empty dashboard and a
+"no dataset" banner — never a crash, never a fake number. To load the same data
+in one shot instead of replaying it:
 
 ```bash
 bun seed           # 5,000 payments, prints a checksum, reports dataset defects
@@ -191,6 +197,7 @@ toggling it live.**
 | `bun test` | Domain unit tests (pure functions only) |
 | `bun run test:integration` | Pipeline + analytics tests against Postgres — **stop `bun dev` first** |
 | `bun rollups:recompute` | Rebuild rollups from `payments` and report drift |
+| `bun sim:clear` | Empty everything derived from events (after pausing a replay) |
 | `bun run test:all` | Unit + integration |
 | `bun run lint` | ESLint, including the layer rule |
 | `bun run typecheck` | `tsc --noEmit` on both workspaces |
@@ -347,6 +354,9 @@ session ends.
 
 **The dashboard shows "No dataset".** Correct behaviour on an empty database.
 `bun seed`.
+
+**"The outbox holds N undelivered rows".** A simulator replay was paused
+part-way. Let it finish, or clear it: `bun sim:clear`.
 
 **"Another relay is draining this database".** A `bun dev` API is running and
 ticking its own relay against the same outbox, which competes with the

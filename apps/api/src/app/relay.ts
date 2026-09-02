@@ -27,22 +27,52 @@ import { project } from './projector.ts';
 
 const TICK_MS = 200;
 const BATCH_SIZE = 50;
+/** Handlers run on their own connections; keep well under the pool. */
+const HANDLER_CONCURRENCY = 5;
 const MAX_ATTEMPTS = 5;
 
 export type Handler = (payload: unknown) => Promise<void>;
 
-const handlers = new Map<string, Handler>([
+export interface HandlerSpec {
+  handle: Handler;
+  /**
+   * Rows sharing a key are delivered **in order, on one lane**.
+   *
+   * Concurrency without this is silently wrong: a payment's `payment.created`
+   * and `payment.attempted` can land on different workers, and the second can
+   * win the row lock first. The lock serialises *access*, not *arrival order* —
+   * so the attempt arrives at a payment that does not exist yet, and the
+   * payment ends up stranded mid-lifecycle. Partitioning by payment keeps every
+   * payment's events sequential while different payments still run in parallel.
+   */
+  partitionKey?: (payload: unknown) => string;
+}
+
+const handlers = new Map<string, HandlerSpec>([
   [
     OUTBOX_TOPIC_PAYMENT_EVENT,
-    async (payload) => {
-      const event = WebhookEvent.parse(payload);
-      await project(event);
+    {
+      handle: async (payload) => {
+        const event = WebhookEvent.parse(payload);
+        await project(event);
+      },
+      partitionKey: (payload) => String((payload as { payment_id?: string }).payment_id ?? ''),
     },
   ],
 ]);
 
-export function registerHandler(topic: string, handler: Handler): void {
-  handlers.set(topic, handler);
+export function registerHandler(topic: string, handler: Handler | HandlerSpec): void {
+  handlers.set(topic, typeof handler === 'function' ? { handle: handler } : handler);
+}
+
+/** Stable, cheap, and only ever used to pick a lane. */
+function laneOf(key: string, lanes: number): number {
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i += 1) {
+    h ^= key.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return Math.abs(h) % lanes;
 }
 
 interface OutboxRow {
@@ -76,60 +106,76 @@ export async function drainOnce(batchSize = BATCH_SIZE): Promise<DrainResult> {
 
     const result: DrainResult = { claimed: rows.length, sent: 0, failed: 0, deadLettered: 0 };
 
+    // Handlers run concurrently on their own connections. Rows touching the
+    // same payment serialise on that payment's row lock inside the projector,
+    // so ordering is preserved where it matters and only where it matters.
+    // The outbox updates are applied afterwards on the claim's own connection,
+    // which cannot be used concurrently.
+    type Outcome = { row: OutboxRow; attempt: number; error: string | null };
+    const outcomes: Outcome[] = [];
+
+    // Rows are claimed in id order, which is the order they were written, which
+    // is event order. Partitioning preserves that order *within* a payment
+    // while letting different payments proceed in parallel.
+    const laneCount = Math.min(HANDLER_CONCURRENCY, rows.length);
+    const lanes: OutboxRow[][] = Array.from({ length: laneCount }, () => []);
     for (const row of rows) {
-      const attempt = row.attempts + 1;
-      const handler = handlers.get(row.topic);
+      const spec = handlers.get(row.topic);
+      const key = spec?.partitionKey?.(row.payload) ?? '';
+      // Rows with no partition key carry no ordering requirement, so they are
+      // spread round-robin rather than piling onto one lane.
+      const lane = key === '' ? outcomes.length % laneCount : laneOf(key, laneCount);
+      lanes[lane]!.push(row);
+    }
 
-      if (!handler) {
-        // This process cannot route the topic — but another relay might, and
-        // §6.1 explicitly contemplates N of them. Dead-lettering on the spot
-        // would let one process destroy messages addressed to another, so an
-        // unroutable topic counts toward MAX_ATTEMPTS like any other failure.
-        // A genuinely unhandled topic still dies, just after five tries rather
-        // than instantly, and the queue still never blocks.
-        const reason = `no handler for topic ${row.topic}`;
-        if (attempt >= MAX_ATTEMPTS) {
-          await deadLetter(tx, row.id, attempt, reason);
-          result.deadLettered += 1;
-          log.error('outbox row dead-lettered', { outboxId: row.id, topic: row.topic, attempt });
-        } else {
-          await tx`
-            UPDATE outbox SET attempts = ${attempt}, last_error = ${reason} WHERE id = ${row.id}
-          `;
-          result.failed += 1;
+    await Promise.all(
+      lanes.map(async (lane) => {
+        for (const row of lane) {
+          const attempt = row.attempts + 1;
+          const spec = handlers.get(row.topic);
+
+          if (!spec) {
+            // This process cannot route the topic — but another relay might, and
+            // §6.1 explicitly contemplates N of them. Dead-lettering on the spot
+            // would let one process destroy messages addressed to another, so an
+            // unroutable topic counts toward MAX_ATTEMPTS like any other failure.
+            outcomes.push({ row, attempt, error: `no handler for topic ${row.topic}` });
+            continue;
+          }
+          try {
+            await spec.handle(row.payload);
+            outcomes.push({ row, attempt, error: null });
+          } catch (err) {
+            outcomes.push({ row, attempt, error: describeError(err) });
+          }
         }
-        continue;
-      }
+      }),
+    );
 
-      try {
-        // The handler runs on its own connection and commits independently.
-        // That is deliberate: `processed_events` is what makes the effect
-        // happen once, so the delivery does not need to be atomic with it.
-        await handler(row.payload);
+    for (const { row, attempt, error } of outcomes) {
+      if (error === null) {
+        // `sent_at` is set only after the handler acknowledged.
         await tx`
           UPDATE outbox SET attempts = ${attempt}, sent_at = now(), last_error = NULL
           WHERE id = ${row.id}
         `;
         result.sent += 1;
-      } catch (err) {
-        const message = describeError(err);
-        if (attempt >= MAX_ATTEMPTS) {
-          await deadLetter(tx, row.id, attempt, message);
-          result.deadLettered += 1;
-          log.error('outbox row dead-lettered', { outboxId: row.id, topic: row.topic, attempt, err });
-        } else {
-          await tx`
-            UPDATE outbox SET attempts = ${attempt}, last_error = ${message} WHERE id = ${row.id}
-          `;
-          result.failed += 1;
-          log.warn('outbox handler failed, will retry', {
-            outboxId: row.id,
-            topic: row.topic,
-            attempt,
-            maxAttempts: MAX_ATTEMPTS,
-            err,
-          });
-        }
+      } else if (attempt >= MAX_ATTEMPTS) {
+        await deadLetter(tx, row.id, attempt, error);
+        result.deadLettered += 1;
+        log.error('outbox row dead-lettered', { outboxId: row.id, topic: row.topic, attempt, error });
+      } else {
+        await tx`
+          UPDATE outbox SET attempts = ${attempt}, last_error = ${error} WHERE id = ${row.id}
+        `;
+        result.failed += 1;
+        log.warn('outbox handler failed, will retry', {
+          outboxId: row.id,
+          topic: row.topic,
+          attempt,
+          maxAttempts: MAX_ATTEMPTS,
+          error,
+        });
       }
     }
 
@@ -158,20 +204,29 @@ let stopped = false;
  * itself. Overlapping drains would still be correct thanks to `SKIP LOCKED`,
  * but they would quietly multiply the connection load under exactly the
  * conditions that made the drain slow.
+ *
+ * A full batch means there is probably more behind it, so the next pass runs
+ * immediately rather than after the poll interval. Sleeping 200 ms between
+ * fixed 50-row batches caps the relay at ~250 rows/second no matter how deep
+ * the backlog — a replay that outruns that never catches up.
  */
 export function startRelay(tickMs = TICK_MS): void {
   stopped = false;
+  let saturated = false;
   const tick = async () => {
     if (stopped || running) return;
     running = true;
     try {
       const r = await drainOnce();
       if (r.claimed > 0) log.debug('relay drained', { ...r });
+      saturated = r.claimed >= BATCH_SIZE;
     } catch (err) {
       log.error('relay tick failed', { err });
+      saturated = false;
     } finally {
       running = false;
-      if (!stopped) timer = setTimeout(() => void tick(), tickMs);
+      // Back off only when idle; drain flat out while there is a backlog.
+      if (!stopped) timer = setTimeout(() => void tick(), saturated ? 0 : tickMs);
     }
   };
   timer = setTimeout(() => void tick(), tickMs);
@@ -188,4 +243,11 @@ export async function stopRelay(): Promise<void> {
     await new Promise((r) => setTimeout(r, 20));
   }
   log.debug('relay stopped');
+}
+
+/** Rows still awaiting delivery. Used to tell a replay when it is genuinely done. */
+export async function pendingOutbox(): Promise<number> {
+  const [row] = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM outbox WHERE sent_at IS NULL AND NOT dead_lettered`;
+  return row?.n ?? 0;
 }

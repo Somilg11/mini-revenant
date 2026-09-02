@@ -51,3 +51,61 @@ export async function ingest(event: WebhookEvent): Promise<IngestResult> {
     return { outcome: 'accepted' as const, eventId: event.event_id };
   });
 }
+
+/**
+ * Ingests many events in one transaction.
+ *
+ * The guarantee is unchanged and if anything stronger: every event row and its
+ * outbox row still commit together, they simply share a transaction rather than
+ * taking one each. Duplicates are still rejected by `UNIQUE(event_id)`, and
+ * only the events that actually inserted get an outbox row — so a redelivery
+ * inside a batch cannot smuggle a second message through.
+ *
+ * Used by the replay runner, which pushes hundreds of events per tick and
+ * cannot afford a round trip each.
+ */
+export async function ingestBatch(events: readonly WebhookEvent[]): Promise<IngestResult[]> {
+  if (events.length === 0) return [];
+
+  return sql.begin(async (tx) => {
+    const inserted = await tx<{ event_id: string }[]>`
+      INSERT INTO payment_events ${tx(
+        events.map((e) => ({
+          event_id: e.event_id,
+          payment_id: e.payment_id,
+          kind: e.kind,
+          // `sql.json(...)`, not `JSON.stringify(...)`: the column is JSONB, and handing
+          // it a plain string stores a JSON *string* containing JSON rather than an
+          // object. `payload->>'x'` then returns NULL for every key and the relay's
+          // schema parse fails with "expected object, received string".
+          payload: tx.json(e.data as never),
+          occurred_at: e.occurred_at,
+        })),
+      )}
+      ON CONFLICT (event_id) DO NOTHING
+      RETURNING event_id
+    `;
+
+    const accepted = new Set(inserted.map((r) => r.event_id));
+    const fresh = events.filter((e) => accepted.has(e.event_id));
+
+    if (fresh.length > 0) {
+      await tx`
+        INSERT INTO outbox ${tx(
+          fresh.map((e) => ({
+            topic: OUTBOX_TOPIC_PAYMENT_EVENT,
+            payload: tx.json(e as never),
+          })),
+        )}
+      `;
+    }
+
+    const duplicates = events.length - fresh.length;
+    if (duplicates > 0) log.debug('duplicate events ignored', { duplicates });
+
+    return events.map((e) => ({
+      outcome: accepted.has(e.event_id) ? ('accepted' as const) : ('duplicate' as const),
+      eventId: e.event_id,
+    }));
+  });
+}

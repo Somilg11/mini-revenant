@@ -124,4 +124,17 @@ export async function assertNoCompetingRelay(): Promise<void> {
         'integration tests:  pkill -f "src/index.ts"',
     );
   }
+
+  // A paused replay leaves tens of thousands of undelivered rows behind. Tests
+  // that drain the outbox would then process that backlog instead of their own
+  // handful of rows, and fail on counts for reasons that have nothing to do
+  // with the code under test.
+  const [backlog] = await sql<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM outbox WHERE sent_at IS NULL AND NOT dead_lettered`;
+  if ((backlog?.n ?? 0) > 100) {
+    throw new Error(
+      `The outbox holds ${backlog!.n} undelivered rows, probably from a paused simulator ` +
+        'run. Let it finish, or clear it:  bun sim:clear',
+    );
+  }
 }

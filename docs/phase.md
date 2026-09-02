@@ -418,20 +418,68 @@ in a file that did nothing wrong). Teardown now happens once, in a preloaded
 
 ## P6 — Clock, runner, SSE
 
-**Status:** TODO
+**Status:** DONE — 164 unit + 42 integration, replay reproduces the seed exactly
 
-- `sim/clock.ts` — simulated clock, 1 real second = 30 simulated minutes,
-  speeds 1×/10×/60×/300×
-- `sim/runner.ts` — walks payments in `created_at` order, pushes events through
-  **the real webhook handler**, never writes `payments` directly
-- `db/notify.ts` — `LISTEN revenant_events` on a dedicated connection, fan out
-  to SSE
+- `sim/clock.ts` — simulated clock, speeds 1×/10×/60×/300× as simulated minutes
+  per real second; time is derived from a real-time anchor rather than
+  accumulated per tick, so a late tick cannot drift it
+- `sim/runner.ts` — replays the deterministic dataset through **the real ingest
+  path**, never writing `payments` directly (§8.5)
+- `db/notify.ts` — one dedicated `LISTEN` connection fanning out to subscribers
 - `http/sse.ts` + `/api/v1/stream`
-- `POST /api/v1/sim/{start,pause,reset,speed,jump-to-incident}`
+- `POST /api/v1/sim/{start,pause,reset,speed,jump-to-incident}`, `GET .../state`
+- `sim/clear.ts` / `bun sim:clear`
+- Web: `SimControlBar` (play/pause, speed, IST clock, progress with incident
+  windows marked, jump-to-incident), `LiveFeed` (SSE), `FailureRateChart`
+  (Recharts, ground-truth windows shaded)
 
-**Gate:** press play — the feed streams, the chart fills, the clock advances.
-Nothing appears on screen that a rollback later un-happened (NOTIFY rides inside
-the writing transaction).
+**Gate:** press play — the feed streams, the chart fills, the clock advances ·
+**5,002 SSE events in a six-second window** · a full replay produces
+`CAPTURED 68,230 · FAILED 5,479 · ATTEMPTED 1,291` — **identical to the
+generator's own numbers** — with acceptance back at domestic 93.1% /
+international 81.4%, zero dead-lettered and zero pending.
+
+That exact match is the real gate: a live replay through ingest → outbox →
+relay → projector reproduces the batch-seeded state to the payment.
+
+### Four bugs, three of them mine, all found by measuring rather than reading
+
+1. **The clock outran the data.** At 300× it reached 100% having replayed 10% of
+   the events, and the dashboard confidently showed a finished run missing nine
+   tenths of its payments. The emitter now reports where it stalled and the
+   clock is held there — **simulated time never runs ahead of data that exists**.
+2. **JSONB written as a string.** The batched inserts used `JSON.stringify` on a
+   `JSONB` column, storing a JSON *string* containing JSON. `payload->>'x'`
+   returned NULL for every key and the relay failed with "expected object,
+   received string". **The seed had the same bug**, so every seeded
+   `payment_events.payload` was double-encoded — latent only because nothing
+   read it back yet; P16's audit trail would have hit it. All three sites now
+   use `sql.json`.
+3. **Concurrent delivery lost per-payment ordering.** Parallelising the relay's
+   handlers let a payment's `created` and `attempted` land on different workers,
+   and the second could win the row lock first. A row lock serialises *access*,
+   not *arrival order* — my comment claiming otherwise was simply wrong. Worse,
+   the projector writes its `processed_events` marker even when a transition is
+   refused, so an event delivered too early is refused **permanently**: 573
+   payments sat in `AUTHORIZED` forever with nothing in the dead-letter queue.
+   Delivery is now partitioned into per-payment lanes.
+4. **Two drainers.** The runner and the background relay both called
+   `drainOnce`, and two concurrent drains claim disjoint rows via `SKIP LOCKED`
+   — reintroducing exactly the disorder that lanes had just fixed. The relay is
+   now the single drainer.
+
+**Throughput, along the way:** the relay slept 200 ms between fixed 50-row
+batches, capping it near 250 rows/second regardless of backlog depth. It now
+drains flat out while saturated and backs off only when idle — 180 → ~1,400
+rows/second. Ingest is batched into one transaction per chunk, preserving the
+event-plus-outbox guarantee per event. A seven-day replay completes in about
+five minutes at 60×.
+
+**A test-isolation gap too:** a paused replay leaves tens of thousands of
+undelivered outbox rows, and tests that drain then process that backlog instead
+of their own handful of rows and fail on counts for unrelated reasons.
+`assertNoCompetingRelay` now also refuses to run against a deep backlog and
+names the fix (`bun sim:clear`).
 
 ---
 
