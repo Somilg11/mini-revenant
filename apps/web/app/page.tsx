@@ -62,6 +62,9 @@ export default async function Home() {
           <a href="/policy" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}>
             Policy →
           </a>
+          <a href="/whatif" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}>
+            What-if →
+          </a>
           <LlmSwitch initial={llm} />
           <DriftIndicator drift={drift} />
           {summary?.window && (

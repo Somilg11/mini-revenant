@@ -79,6 +79,7 @@ export default async function RecoveryPage() {
                     {c.is_international && (
                       <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--warning)' }}>intl</span>
                     )}
+                    <Link href={`/audit/${c.payment_id}`} title="audit trail" style={{ marginLeft: 6, fontSize: 10, color: 'var(--text-tertiary)', textDecoration: 'none' }}>audit</Link>
                   </td>
                   <td className="num" style={td} title={exactPaise(c.amount_paise)}>
                     {formatInrCompact(c.amount_paise)}

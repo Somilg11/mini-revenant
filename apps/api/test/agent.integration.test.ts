@@ -100,12 +100,11 @@ describe('with the model off, the pipeline is correct and says so', () => {
     const p = await failedPayment();
     await openCases(NOW, 50);
     const c = await caseFor(p);
-    // The worklist is global and a seeded database holds thousands of older
-    // eligible cases; ask for all of them so the answer is about this case.
-    const before = await gateCandidates(100_000, NOW.toISOString());
+    // Scoped to this case: the worklist is global.
+    const before = await gateCandidates(10, NOW.toISOString(), [c.id]);
     expect(before.some((g) => g.case_id === c.id)).toBe(false);
     await proposeForCases(NOW, 50);
-    const after = await gateCandidates(100_000, NOW.toISOString());
+    const after = await gateCandidates(10, NOW.toISOString(), [c.id]);
     expect(after.some((g) => g.case_id === c.id)).toBe(true);
   });
 

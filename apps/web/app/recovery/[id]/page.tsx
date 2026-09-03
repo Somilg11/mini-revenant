@@ -48,6 +48,7 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
         </h1>
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>
           case <span className="mono">{c.id}</span> · opened <span className="mono">{c.opened_at.replace('T', ' ').slice(0, 19)}</span> UTC
+          {' · '}<Link href={`/audit/${c.payment_id}`} style={{ color: 'var(--accent)', textDecoration: 'none' }}>audit trail →</Link>
         </div>
       </header>
 

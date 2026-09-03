@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { runner } from '../../sim/runner.ts';
+import { lastWhatIf, runWhatIf } from '../../sim/whatif.ts';
 import { SPEED_PRESETS } from '../../sim/clock.ts';
-import { ValidationError } from '../../lib/errors.ts';
+import { NotFoundError, ValidationError } from '../../lib/errors.ts';
 import type { AppEnv } from '../app.ts';
 
 export const sim = new Hono<AppEnv>();
@@ -46,4 +47,13 @@ sim.post('/api/v1/sim/jump-to-incident', async (c) => {
   } catch (err) {
     throw new ValidationError(err instanceof Error ? err.message : 'unknown incident', { id });
   }
+});
+
+/** BASELINE vs AGENT on the held-out split (§8.7). Stored; the last run is what the page shows. */
+sim.post('/api/v1/simulation/whatif', async (c) => c.json(await runWhatIf()));
+
+sim.get('/api/v1/simulation/whatif', async (c) => {
+  const run = await lastWhatIf();
+  if (!run) throw new NotFoundError('what-if run', 'latest');
+  return c.json(run);
 });

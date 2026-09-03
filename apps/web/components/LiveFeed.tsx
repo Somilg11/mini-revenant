@@ -76,7 +76,9 @@ export function LiveFeed() {
                     className="mono"
                     style={{ color: 'var(--text-tertiary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                   >
-                    {String(e.data.payment_id ?? '')}
+                    {typeof e.data.payment_id === 'string' ? (
+                      <a href={`/audit/${e.data.payment_id}`} title="audit trail" style={{ color: 'inherit', textDecoration: 'none' }}>{e.data.payment_id}</a>
+                    ) : ''}
                   </span>
                   {typeof e.data.failure_code === 'string' && (
                     <span style={{ color: 'var(--danger)', fontSize: 11 }}>{e.data.failure_code}</span>

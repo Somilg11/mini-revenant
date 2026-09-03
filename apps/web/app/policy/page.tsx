@@ -78,7 +78,7 @@ export default async function PolicyPage() {
                   <tr key={d.id} style={{ height: 30 }}>
                     <td style={td}><span className="mono" style={{ color: colour, fontSize: 11 }}>{d.verdict}</span>{d.reasons.deferred && <span className="mono" style={{ fontSize: 9, color: 'var(--text-tertiary)', marginLeft: 6 }}>deferred</span>}</td>
                     <td style={td}><span className="mono" style={{ fontSize: 11 }}>{d.proposed_action}</span></td>
-                    <td style={td}><Link href={`/recovery/${d.case_id}`} className="mono" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: 11 }}>{d.payment_id}</Link></td>
+                    <td style={td}><Link href={`/recovery/${d.case_id}`} className="mono" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: 11 }}>{d.payment_id}</Link> <Link href={`/audit/${d.payment_id}`} style={{ fontSize: 10, color: 'var(--text-tertiary)', textDecoration: 'none' }}>audit</Link></td>
                     <td className="num" style={td}>{formatInrCompact(d.amount_paise)}</td>
                     <td style={{ ...td, color: 'var(--text-tertiary)' }} className="mono">{failed.length ? failed.map((r) => `#${r}`).join(' ') : '—'}</td>
                     <td className="mono" style={{ ...td, color: 'var(--text-tertiary)', fontSize: 11 }}>{d.decided_at.replace('T', ' ').slice(5, 16)}</td>

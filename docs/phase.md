@@ -1164,33 +1164,107 @@ failure: a case is never gated on a proposal that has not been made.
 
 ## P16 — Audit trail
 
-**Status:** TODO
+**Status:** DONE — 2 integration, `bun run check` green
 
-- `/api/v1/audit/:paymentId` and `/audit/[paymentId]`
-- One vertical timeline: EVENT → DETECTION → DIAGNOSIS → AGENT DECISION →
-  POLICY → ACTION → OUTCOME, in causal order, each node with its timestamp,
-  inputs and the artefact it produced
+- `app/audit.ts` — `auditTrail(paymentId)` assembles one causal timeline:
+  every `payment_events` row with the transition it caused (or the note that
+  it caused none), the incidents whose slice and life overlap the payment
+  (detection, with gates and z), their diagnosis (top hypothesis, share,
+  confidence, narrative + source), every case (probability + source, all five
+  options), every agent decision (source, proposed choice, override reason,
+  prompt hash, latency), every policy decision (verdict, deferred, twelve
+  rules, the stored input and its hash), every action (idempotency key,
+  attempts, reference, error class) and every verified outcome (attribution,
+  credited). Sorted by simulated time, then pipeline stage — a sweep opens,
+  proposes, gates and executes at one instant, and the order inside that
+  instant is the pipeline's
+- **Recomputed on every request, not asserted.** A policy node is
+  re-evaluated from the `PolicyInput` it stored; hash, verdict and all twelve
+  rule results are compared and the node says `reproduced` or not. A case
+  node re-adds `gross − cost − friction` for the chosen option and compares it
+  to the stored EV. The header counts `reproduced ok / checked`
+- `GET /api/v1/audit/:paymentId` (404 for an unknown payment, never an empty
+  page); `/audit/[paymentId]` with `AuditTimeline` — stage counts across the
+  top, one card per node with timestamp, title, badge, the narrative where
+  there is one, and inputs/artefact JSON behind a disclosure
+- Reachable from the case page header, the recovery list, the policy log and
+  every live-feed row
 
-**Gate:** any payment renders event to outcome with every input shown ·
-**every number on the page is recomputable from stored inputs** · reachable from
-any case, incident or feed row.
+**Gate, on the replayed dataset:** a recovered payment renders
+`event ×3 → case → agent → policy → action → event ×2 → outcome`, 2 of 2
+recomputable stages reproduced; a payment inside a detected incident carries
+its `detection` and `diagnosis` nodes between the failure and the case; an
+unknown id is a 404. The integration test drives one payment through ingest,
+projector, case, agent, gate, executor, drain and verifier, then asserts the
+order, the reproduction and the presence of the hash and the key.
+
+**Watch for:** `TIMESTAMPTZ` columns arrive as `Date` objects from the
+driver; the trail normalises them to ISO strings before sorting, and anything
+else that sorts timestamps across tables should do the same.
 
 ---
 
 ## P17 — What-if simulator
 
-**Status:** TODO
+**Status:** DONE — 6 unit, 1 integration, `bun run check` green
 
-- `sim/whatif.ts` — replay against the stored labels, no gateway calls, no clock
-- BASELINE (one blind immediate retry on every failure, single processor) vs
-  AGENT (probability, EV, policy gate, chosen intervention)
-- **Held-out test split only**
-- Split the table by `is_international`
-- `/whatif` page with the honesty banner and `bun whatif`
+- `domain/whatif.ts` — PURE. `runBaseline()`: one blind retry on every row,
+  ₹2 each, resolved by `recoverable_by_retry`. `runAgent()`: per row, in
+  order — scorer → `choose()` → the **real** `evaluatePolicy()` fed a ledger
+  of what the arm has already done for that merchant today and this hour, so
+  budgets and the blast radius bite in the simulation exactly as they do live
+  → the chosen intervention resolved by its own label. `do_nothing`, DENY and
+  deferred are counted as declined; REQUIRE_APPROVAL is counted as signed
+  *and reported* ("would need a signature"). `compare()` throws if the arms
+  ever see different row counts — a divergence is an error, not a table
+- `sim/whatif.ts` — `whatIfRows()` is the training query restricted to
+  `split = 'test'` plus all four counterfactuals and the merchant's limits;
+  the scorer is whatever is active (model or baseline, and the run says
+  which); stored as two `simulations` rows sharing a `run_id`; `bun whatif`
+  prints the §8.7 table; `POST`/`GET /api/v1/simulation/whatif`
+- `/whatif` — the honesty banner first, then the incremental revenue as the
+  single large figure, the interventions/recovered/signature tiles, the two
+  tables (all rows; international only, with acceptance before, after
+  baseline, after agent), the bar pair and the per-strategy counts. "Run
+  again" re-runs both arms on the current labels and model
 
-**Gate:** incremental revenue printed · **both arms operate on an identical set
-of failed payments — assert the counts match** · the page states: held-out
-split, counterfactuals decided before either arm ran, simulation not live result.
+**Gate, on the replayed dataset (held-out split = the last 15% by position,
+which is 2026-07-31 — the day the international 3DS incident runs):**
+
+```
+                                BASELINE       AGENT
+Failed payments                     1025        1025      ← identical, asserted
+Interventions attempted             1025         960
+Recovered                            273         592
+Recovery rate                      26.6%       57.8%
+Intervention cost                 ₹2,050      ₹5,954
+Revenue recovered              ₹7,17,123  ₹24,36,672
+Incremental revenue                       ₹17,19,549
+
+INTERNATIONAL ONLY              BASELINE       AGENT
+Failed payments                      616         616
+Recovered                             89         366
+Acceptance after recovery          67.9%       84.8%
+```
+
+By strategy: `alternate_gateway` 469 attempted / 294 recovered — the second
+route carries the international row; `retry` 168/128; `payment_link`
+214/118; `alternate_method` 109/52. Declined: 45 `do_nothing`, 20 deferred
+on capacity, 0 denied; 17 attempts would need a signature.
+
+**Where this differs from §8.7's illustration, honestly.** The spec's table
+has the agent acting on 59% fewer payments; here it acts on 6% fewer. The
+difference is the scorer: the trained model prices most of these failures
+above 0.75, so almost every option clears zero and the engine rarely reaches
+`do_nothing`. The lift comes from choosing the *right* intervention — the
+baseline retries 616 international failures into the same 3DS wall and
+recovers 89 — not from abstaining. P14's live calibration already says the
+model is over-confident; a better-calibrated scorer would move the
+"interventions avoided" number, and the page prints whatever it is.
+
+**Watch for:** the test window is one day because the split is by position,
+so `segmentTotals` — the denominator of "acceptance after recovery" — spans
+that day only. It is labelled on the page.
 
 ---
 

@@ -974,7 +974,7 @@ export interface GateCandidate {
 
 export const DEFERRAL_INTERVAL = '1 hour';
 
-export async function gateCandidates(limit: number, now: string, db: Sql = sql): Promise<GateCandidate[]> {
+export async function gateCandidates(limit: number, now: string, onlyCases?: string[], db: Sql = sql): Promise<GateCandidate[]> {
   return db<GateCandidate[]>`
     SELECT c.id AS case_id, c.payment_id, c.merchant_id, c.chosen_strategy, c.expected_value_paise,
            c.strategy_options,
@@ -995,6 +995,7 @@ export async function gateCandidates(limit: number, now: string, db: Sql = sql):
         WHERE d.case_id = c.id
           AND (NOT (d.reasons ? 'deferred')
                OR d.decided_at > ${now}::timestamptz - ${DEFERRAL_INTERVAL}::interval))
+      ${onlyCases ? db`AND c.id IN ${db(onlyCases)}` : db``}
     ORDER BY c.opened_at
     LIMIT ${limit}`;
 }
@@ -1180,7 +1181,7 @@ export interface PendingExecutionRow {
  * gate's own and a human's — whose case is still OPEN and which have no action
  * row. Crash between decision and action, and the next tick picks it up.
  */
-export async function pendingExecutions(limit: number, db: Sql = sql): Promise<PendingExecutionRow[]> {
+export async function pendingExecutions(limit: number, onlyCases?: string[], db: Sql = sql): Promise<PendingExecutionRow[]> {
   return db<PendingExecutionRow[]>`
     SELECT d.id AS decision_id, d.case_id, d.reasons, d.policy_version, d.input_hash
     FROM policy_decisions d
@@ -1188,6 +1189,7 @@ export async function pendingExecutions(limit: number, db: Sql = sql): Promise<P
     WHERE d.verdict = 'ALLOW'
       AND c.status = 'OPEN'
       AND NOT EXISTS (SELECT 1 FROM recovery_actions a WHERE a.policy_decision_id = d.id)
+      ${onlyCases ? db`AND d.case_id IN ${db(onlyCases)}` : db``}
     ORDER BY d.decided_at, d.id
     LIMIT ${limit}`;
 }
@@ -1532,4 +1534,229 @@ export async function setIncidentNarrative(
   db: Queryable = sql,
 ): Promise<void> {
   await db`UPDATE incidents SET narrative = ${narrative}, narrative_source = ${source} WHERE id = ${id}`;
+}
+
+// ── Audit trail (§10, §11.2) ─────────────────────────────────────────────────
+
+export interface PaymentRow {
+  id: string;
+  merchant_id: string;
+  customer_id: string;
+  amount_paise: number;
+  method: string;
+  bank: string | null;
+  currency: string;
+  card_country: string | null;
+  card_network: string | null;
+  is_international: boolean;
+  threeds_required: boolean;
+  gateway: string;
+  state: string;
+  failure_code: string | null;
+  attempt_index: number;
+  abandoned: boolean;
+  created_at: string;
+  last_event_at: string;
+  version: number;
+}
+
+export async function paymentById(id: string, db: Sql = sql): Promise<PaymentRow | null> {
+  const [row] = await db<PaymentRow[]>`
+    SELECT id, merchant_id, customer_id, amount_paise, method::text AS method, bank, currency, card_country,
+           card_network, is_international, threeds_required, gateway, state::text AS state, failure_code,
+           attempt_index, abandoned, created_at, last_event_at, version
+    FROM payments WHERE id = ${id}`;
+  return row ?? null;
+}
+
+export interface PaymentEventRow {
+  event_id: string;
+  kind: string;
+  payload: Record<string, unknown>;
+  occurred_at: string;
+  received_at: string;
+}
+
+export async function eventsForPayment(paymentId: string, db: Sql = sql): Promise<PaymentEventRow[]> {
+  return db<PaymentEventRow[]>`
+    SELECT event_id, kind, payload, occurred_at, received_at
+    FROM payment_events WHERE payment_id = ${paymentId} ORDER BY occurred_at, received_at`;
+}
+
+export interface TransitionRow {
+  id: number;
+  from_state: string;
+  to_state: string;
+  event_id: string;
+  occurred_at: string;
+  stale: boolean;
+}
+
+export async function transitionsForPayment(paymentId: string, db: Sql = sql): Promise<TransitionRow[]> {
+  return db<TransitionRow[]>`
+    SELECT id, from_state::text AS from_state, to_state::text AS to_state, event_id, occurred_at, stale
+    FROM payment_state_transitions WHERE payment_id = ${paymentId} ORDER BY occurred_at, id`;
+}
+
+/**
+ * Incidents on a slice this payment belongs to whose life overlaps the
+ * payment's — the detection this payment was, or could have been, part of.
+ * The two-hour reach before `opened_at` is the detector's evaluation window.
+ */
+export async function incidentsTouchingPayment(p: PaymentRow, db: Sql = sql): Promise<IncidentRow[]> {
+  return db<IncidentRow[]>`
+    SELECT * FROM incidents i
+    WHERE (
+      i.dimension = 'all'
+      OR (i.dimension = 'method' AND i.dimension_value = ${p.method})
+      OR (i.dimension = 'bank' AND i.dimension_value = ${p.bank ?? 'none'})
+      OR (i.dimension = 'is_international' AND i.dimension_value = ${p.is_international ? 'true' : 'false'})
+      OR (i.dimension = 'card_network' AND i.dimension_value = ${p.card_network ?? 'none'})
+    )
+      AND (i.merchant_id IS NULL OR i.merchant_id = ${p.merchant_id})
+      AND i.opened_at - interval '2 hours' <= ${p.last_event_at}::timestamptz
+      AND COALESCE(i.resolved_at, 'infinity'::timestamptz) >= ${p.created_at}::timestamptz
+    ORDER BY i.opened_at`;
+}
+
+export async function casesForPayment(paymentId: string, db: Sql = sql): Promise<CaseRow[]> {
+  return db<CaseRow[]>`SELECT * FROM recovery_cases WHERE payment_id = ${paymentId} ORDER BY opened_at, id`;
+}
+
+export async function agentDecisionsForCases(caseIds: string[], db: Sql = sql): Promise<AgentDecisionRow[]> {
+  if (caseIds.length === 0) return [];
+  return db<AgentDecisionRow[]>`
+    SELECT * FROM agent_decisions WHERE case_id IN ${db(caseIds)} ORDER BY created_at, id`;
+}
+
+export async function policyDecisionsForCases(caseIds: string[], db: Sql = sql): Promise<PolicyDecisionRow[]> {
+  if (caseIds.length === 0) return [];
+  return db<PolicyDecisionRow[]>`
+    SELECT d.*, c.payment_id, p.amount_paise, c.chosen_strategy
+    FROM policy_decisions d
+    JOIN recovery_cases c ON c.id = d.case_id
+    JOIN payments p ON p.id = c.payment_id
+    WHERE d.case_id IN ${db(caseIds)}
+    ORDER BY d.decided_at, d.id`;
+}
+
+export async function actionsForCases(caseIds: string[], db: Sql = sql): Promise<ActionRow[]> {
+  if (caseIds.length === 0) return [];
+  return db<ActionRow[]>`SELECT * FROM recovery_actions WHERE case_id IN ${db(caseIds)} ORDER BY created_at, id`;
+}
+
+export async function verificationsForCases(caseIds: string[], db: Sql = sql): Promise<VerificationRow[]> {
+  if (caseIds.length === 0) return [];
+  return db<VerificationRow[]>`SELECT * FROM outcome_verifications WHERE case_id IN ${db(caseIds)} ORDER BY verified_at, id`;
+}
+
+// ── What-if (§8.7) ───────────────────────────────────────────────────────────
+
+export interface WhatIfSourceRow extends TrainingRow {
+  recoverable_by_retry: boolean;
+  recoverable_by_link: boolean;
+  recoverable_by_alternate: boolean;
+  recoverable_by_gateway: boolean;
+  is_paused: boolean;
+  daily_action_budget_paise: number;
+  daily_action_budget_count: number;
+}
+
+/**
+ * The held-out test split with everything both arms need: the same feature
+ * columns training used, all four counterfactuals, and the merchant's policy
+ * limits. Chronological, because the agent arm's budgets accumulate in order.
+ */
+export async function whatIfRows(db: Sql = sql): Promise<WhatIfSourceRow[]> {
+  return db<WhatIfSourceRow[]>`
+    SELECT
+      p.id, p.merchant_id, p.customer_id, p.amount_paise,
+      p.method::text AS method, p.bank, p.card_network, p.failure_code,
+      p.abandoned, p.attempt_index, p.created_at::text, p.last_event_at::text,
+      p.is_international,
+      COALESCE(cust.attempts, 0)::int  AS customer_prior_attempts,
+      COALESCE(cust.successes, 0)::int AS customer_prior_successes,
+      COALESCE(merch.attempts, 0)::int  AS merchant_prior_attempts,
+      COALESCE(merch.successes, 0)::int AS merchant_prior_successes,
+      COALESCE(EXTRACT(EPOCH FROM (p.created_at - prev.last_created))::int, -1)
+        AS seconds_since_last_attempt,
+      EXISTS (
+        SELECT 1 FROM incidents i
+        WHERE i.opened_at <= p.created_at
+          AND (i.status = 'OPEN' OR i.resolved_at >= p.created_at)
+          AND (
+            (i.dimension = 'all')
+            OR (i.dimension = 'method' AND i.dimension_value = p.method::text)
+            OR (i.dimension = 'bank' AND i.dimension_value = COALESCE(p.bank, 'none'))
+            OR (i.dimension = 'is_international'
+                AND i.dimension_value = CASE WHEN p.is_international THEN 'true' ELSE 'false' END)
+            OR (i.dimension = 'card_network' AND i.dimension_value = COALESCE(p.card_network, 'none'))
+          )
+      ) AS incident_active,
+      cu.opted_out,
+      cu.lifetime_value_paise,
+      l.recoverable,
+      l.split,
+      l.recoverable_by_retry, l.recoverable_by_link, l.recoverable_by_alternate, l.recoverable_by_gateway,
+      m.is_paused, m.daily_action_budget_paise, m.daily_action_budget_count
+    FROM ground_truth_labels l
+    JOIN payments p ON p.id = l.payment_id
+    JOIN customers cu ON cu.id = p.customer_id
+    JOIN merchants m ON m.id = p.merchant_id
+    LEFT JOIN LATERAL (
+      SELECT count(*)::int AS attempts,
+             count(*) FILTER (WHERE p2.state = 'CAPTURED')::int AS successes
+      FROM payments p2 WHERE p2.customer_id = p.customer_id AND p2.created_at < p.created_at
+    ) cust ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT count(*)::int AS attempts,
+             count(*) FILTER (WHERE p3.state = 'CAPTURED')::int AS successes
+      FROM payments p3 WHERE p3.merchant_id = p.merchant_id AND p3.created_at < p.created_at
+    ) merch ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT max(p4.created_at) AS last_created
+      FROM payments p4 WHERE p4.customer_id = p.customer_id AND p4.created_at < p.created_at
+    ) prev ON TRUE
+    WHERE l.split = 'test'
+    ORDER BY p.created_at, p.id`;
+}
+
+/** Every payment in a window by segment — the denominator of "acceptance after recovery". */
+export async function segmentTotals(from: string, to: string, db: Sql = sql): Promise<{ international: { payments: number; captured: number }; domestic: { payments: number; captured: number } }> {
+  const rows = await db<{ segment: 'international' | 'domestic'; payments: number; captured: number }[]>`
+    SELECT CASE WHEN p.is_international THEN 'international' ELSE 'domestic' END AS segment,
+           count(*)::int AS payments,
+           count(*) FILTER (WHERE p.state = 'CAPTURED')::int AS captured
+    FROM payments p
+    WHERE p.created_at >= ${from} AND p.created_at <= ${to}
+    GROUP BY 1`;
+  const out = { international: { payments: 0, captured: 0 }, domestic: { payments: 0, captured: 0 } };
+  for (const r of rows) out[r.segment] = { payments: r.payments, captured: r.captured };
+  return out;
+}
+
+export interface SimulationRow {
+  id: string;
+  kind: 'baseline' | 'agent';
+  params: unknown;
+  results: unknown;
+  created_at: string;
+}
+
+export async function insertSimulation(row: { id: string; kind: 'baseline' | 'agent'; params: unknown; results: unknown }, db: Queryable = sql): Promise<void> {
+  await db`
+    INSERT INTO simulations (id, kind, params, results)
+    VALUES (${row.id}, ${row.kind}, ${db.json(row.params as never)}, ${db.json(row.results as never)})`;
+}
+
+/** The most recent pair, if any. */
+export async function latestSimulation(db: Sql = sql): Promise<{ baseline: SimulationRow; agent: SimulationRow } | null> {
+  const rows = await db<SimulationRow[]>`
+    SELECT id, kind, params, results, created_at::text FROM simulations
+    ORDER BY created_at DESC, id DESC LIMIT 20`;
+  const agent = rows.find((r) => r.kind === 'agent');
+  if (!agent) return null;
+  const runId = (agent.params as { run_id?: string }).run_id;
+  const baseline = rows.find((r) => r.kind === 'baseline' && (r.params as { run_id?: string }).run_id === runId);
+  return baseline ? { baseline, agent } : null;
 }

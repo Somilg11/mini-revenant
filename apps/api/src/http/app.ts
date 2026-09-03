@@ -11,6 +11,7 @@ import { metrics } from './routes/metrics.ts';
 import { model } from './routes/model.ts';
 import { policy } from './routes/policy.ts';
 import { agent } from './routes/agent.ts';
+import { audit } from './routes/audit.ts';
 import { sim } from './routes/sim.ts';
 import { stream } from './sse.ts';
 import { webhooks } from './routes/webhooks.ts';
@@ -82,6 +83,7 @@ export function createApp(): Hono<AppEnv> {
   app.route('/', model);
   app.route('/', policy);
   app.route('/', agent);
+  app.route('/', audit);
   app.route('/', sim);
   app.route('/', stream);
 

@@ -523,3 +523,77 @@ export const fetchLiveCalibration = () =>
 
 export const fetchModel = () =>
   api<ModelCard>('/api/v1/model').catch((): ModelCard => ({ active: null, versions: [] }));
+
+// ── Audit trail (§11.2) ──────────────────────────────────────────────────────
+
+export interface AuditNode {
+  stage: 'event' | 'transition' | 'detection' | 'diagnosis' | 'case' | 'agent' | 'policy' | 'action' | 'outcome';
+  at: string;
+  id: string;
+  title: string;
+  inputs: Record<string, unknown>;
+  artefact: Record<string, unknown>;
+  reproduced?: { ok: boolean; detail: string };
+  href?: string;
+}
+
+export interface AuditTrail {
+  payment: {
+    id: string;
+    merchant_id: string;
+    customer_id: string;
+    amount_paise: number;
+    method: string;
+    bank: string | null;
+    card_network: string | null;
+    is_international: boolean;
+    gateway: string;
+    state: string;
+    failure_code: string | null;
+    attempt_index: number;
+    abandoned: boolean;
+    created_at: string;
+    last_event_at: string;
+  };
+  nodes: AuditNode[];
+  counts: Partial<Record<AuditNode['stage'], number>>;
+  reproduced: { checked: number; ok: number };
+}
+
+export const fetchAudit = (paymentId: string) => api<AuditTrail>(`/api/v1/audit/${paymentId}`);
+
+// ── What-if (§8.7) ───────────────────────────────────────────────────────────
+
+export interface WhatIfSegment {
+  failed: number;
+  attempted: number;
+  recovered: number;
+  recoveryRate: number | null;
+  costPaise: number;
+  revenueRecoveredPaise: number;
+}
+
+export interface WhatIfArm extends WhatIfSegment {
+  byStrategy: Record<'retry' | 'payment_link' | 'alternate_method' | 'alternate_gateway' | 'do_nothing', { attempted: number; recovered: number; revenuePaise: number }>;
+  declined: { doNothing: number; denied: number; deferred: number };
+  requiredApproval: number;
+  bySource: { model: number; baseline: number };
+  international: WhatIfSegment;
+  domestic: WhatIfSegment;
+}
+
+export interface WhatIfRun {
+  run_id: string;
+  ran_at: string;
+  params: { split: 'test'; rows: number; window: { from: string; to: string }; model_id: string | null; scorer: 'model' | 'baseline'; policy_version: string };
+  comparison: {
+    rows: number;
+    baseline: WhatIfArm;
+    agent: WhatIfArm;
+    incrementalRevenuePaise: number;
+    interventionsAvoided: number;
+    acceptance: Record<'international' | 'domestic', { before: number | null; baseline: number | null; agent: number | null; totals: { payments: number; captured: number } }>;
+  };
+}
+
+export const fetchWhatIf = () => api<WhatIfRun>('/api/v1/simulation/whatif').catch((): WhatIfRun | null => null);

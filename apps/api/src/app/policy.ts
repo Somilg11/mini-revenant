@@ -141,9 +141,10 @@ export interface GateResult {
 }
 
 /** Evaluates every undecided proposal. */
-export async function gateOpenCases(now: Date, limit = 300): Promise<GateResult> {
+/** `onlyCases` scopes the worklist — one case, or a test's own — instead of the global queue. */
+export async function gateOpenCases(now: Date, limit = 300, onlyCases?: string[]): Promise<GateResult> {
   const result: GateResult = { evaluated: 0, allow: 0, deny: 0, deferred: 0, requireApproval: 0, approved: [] };
-  const candidates = await gateCandidates(limit, now.toISOString());
+  const candidates = await gateCandidates(limit, now.toISOString(), onlyCases);
 
   for (const c of candidates) {
     const input = await buildInput(c, now);
@@ -287,9 +288,9 @@ export interface ExecuteResult {
  * executor never trusts an in-memory object that outlived its transaction,
  * and a crash between the decision and the action loses nothing.
  */
-export async function executeApproved(now: Date, limit = 300): Promise<ExecuteResult> {
+export async function executeApproved(now: Date, limit = 300, onlyCases?: string[]): Promise<ExecuteResult> {
   const result: ExecuteResult = { executed: 0, succeeded: 0, failed: 0, escalated: 0, replayed: 0, skipped: 0 };
-  const pending = await pendingExecutions(limit);
+  const pending = await pendingExecutions(limit, onlyCases);
 
   for (const p of pending) {
     const stored = p.reasons as { input?: PolicyInput; human_approval?: unknown };
@@ -334,8 +335,8 @@ export async function executeApproved(now: Date, limit = 300): Promise<ExecuteRe
 }
 
 /** Gate, then act: the two halves of §9's "agent proposes → POLICY GATE → executor". */
-export async function runGate(now: Date, limit = 300): Promise<{ gate: GateResult; execute: ExecuteResult }> {
-  const gate = await gateOpenCases(now, limit);
-  const execute = await executeApproved(now, limit);
+export async function runGate(now: Date, limit = 300, onlyCases?: string[]): Promise<{ gate: GateResult; execute: ExecuteResult }> {
+  const gate = await gateOpenCases(now, limit, onlyCases);
+  const execute = await executeApproved(now, limit, onlyCases);
   return { gate, execute };
 }
