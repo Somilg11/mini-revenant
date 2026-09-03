@@ -8,6 +8,7 @@ import {
   routeAccepts,
   routeFor,
   settleDelayMinutes,
+  type Fault,
   type Route,
 } from '../domain/execution.ts';
 import type { ActionKind } from '../domain/policy.ts';
@@ -74,6 +75,8 @@ export interface GatewayStats {
   refusedByRoute: number;
   /** Actions on a payment with no counterfactual on record — a dataset defect, counted rather than hidden. */
   unlabelled: number;
+  /** Faults queued by the simulator panel, consumed before the seeded draw. */
+  queuedFaults: Fault[];
 }
 
 /** A uint32 seed from any string, so every draw is a pure function of its key. */
@@ -101,7 +104,20 @@ export class SimulatedGateway {
     faults: { retryable: 0, timeout: 0, terminal: 0 },
     refusedByRoute: 0,
     unlabelled: 0,
+    queuedFaults: [],
   };
+
+  /**
+   * The simulator panel's fault injector (§13 step 9): the next `count`
+   * fresh calls draw this fault instead of the seeded one, so a 429 storm or
+   * a run of timeouts can be produced on stage and watched through the
+   * executor's retry, reconcile and escalate paths.
+   */
+  injectFaults(kind: Exclude<Fault, 'none'>, count: number): GatewayStats {
+    for (let i = 0; i < count; i += 1) this.stats.queuedFaults.push(kind);
+    log.warn('gateway faults injected', { kind, count, queued: this.stats.queuedFaults.length });
+    return this.snapshot();
+  }
 
   rememberLabels(rows: Iterable<{ paymentId: string } & Omit<GroundTruthLabelRow, never>>): void {
     for (const l of rows) {
@@ -130,7 +146,12 @@ export class SimulatedGateway {
     this.attemptsByKey.set(idempotencyKey, attempt);
     const rng = new Rng(seedOf(`${idempotencyKey}#${attempt}`));
 
-    switch (drawFault(rng.next())) {
+    // One draw either way, so an injected fault does not shift the seeded
+    // stream for everything after it.
+    const draw = rng.next();
+    const injected = this.stats.queuedFaults.shift();
+    const fault = injected ?? drawFault(draw);
+    switch (fault) {
       case 'retryable': {
         this.stats.faults.retryable += 1;
         const status = rng.bool(0.5) ? 429 : 503;
@@ -227,7 +248,7 @@ export class SimulatedGateway {
   }
 
   snapshot(): GatewayStats {
-    return { ...this.stats, faults: { ...this.stats.faults } };
+    return { ...this.stats, faults: { ...this.stats.faults }, queuedFaults: [...this.stats.queuedFaults] };
   }
 
   /** A dataset reset forgets every key: the keys are derived from ids that no longer exist. */
@@ -240,6 +261,7 @@ export class SimulatedGateway {
     this.stats.faults = { retryable: 0, timeout: 0, terminal: 0 };
     this.stats.refusedByRoute = 0;
     this.stats.unlabelled = 0;
+    this.stats.queuedFaults = [];
   }
 }
 

@@ -84,7 +84,7 @@ export function LiveFeed() {
                     <span style={{ color: 'var(--danger)', fontSize: 11 }}>{e.data.failure_code}</span>
                   )}
                   {amount !== null && (
-                    <span className="num mono" style={{ color: 'var(--text-secondary)', width: 64 }}>
+                    <span className="num mono" style={{ color: 'var(--text-secondary)', width: 64 }} title={`${amount.toLocaleString('en-IN')} paise`}>
                       {formatInrCompact(amount)}
                     </span>
                   )}

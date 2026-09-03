@@ -37,7 +37,10 @@ bun dev            # api on :8090, web on :3000
 Open **http://localhost:3000** and press **▶ Play**: seven simulated days of
 payments replay through the real ingest path in about five minutes, the live
 feed streams, and the failure-rate chart fills with the injected incident
-windows shaded.
+windows shaded. `⌘K` opens the command palette (`g i` incidents, `g r`
+recovery, `g p` policy, `g s` simulator, `Space` toggles the replay).
+`/simulator` shows the answer key beside the detector's answers — precision,
+recall, RCA accuracy — and lets you inject gateway faults on stage.
 
 With an empty database and the simulator idle you get an empty dashboard and a
 "no dataset" banner — never a crash, never a fake number. To load the same data

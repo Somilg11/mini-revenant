@@ -123,6 +123,47 @@ describe('the idempotency key is reserved before the gateway call, by constraint
   });
 });
 
+describe('the simulator panel\'s fault injector (§13 step 9)', () => {
+  test('three injected 429s: capped backoff, two retries, then ESCALATED rather than a loop — and no gateway effect', async () => {
+    await failedPayment(true);
+    const gateway = new SimulatedGateway();
+    gateway.injectFaults('retryable', 3);
+    const r = await build(gateway).execute(approved, DECISION, NOW);
+    expect(r.action.status).toBe('ESCALATED');
+    expect(r.action.attempts).toBe(3);
+    expect(r.action.error_class).toBe('RETRYABLE');
+    const g = gateway.snapshot();
+    expect(g.faults.retryable).toBe(3);
+    expect(g.effects).toBe(0);
+    expect(g.queuedFaults).toEqual([]);
+  });
+
+  test('an injected timeout is reconciled by reference, never blind-retried: the gateway is asked what it did', async () => {
+    await failedPayment(true);
+    const gateway = new SimulatedGateway();
+    gateway.injectFaults('timeout', 1);
+    const r = await build(gateway).execute(approved, DECISION, NOW);
+    const g = gateway.snapshot();
+    expect(g.faults.timeout).toBe(1);
+    // Either the gateway had acted (adopted by reference, one attempt) or it
+    // had not (a confirmed nothing, then a retry). Never two effects.
+    expect(g.effects).toBeLessThanOrEqual(1);
+    if (r.reconciled) expect(r.action.attempts).toBe(1);
+    else expect(r.action.attempts).toBeGreaterThanOrEqual(2);
+  });
+
+  test('an injected hard rejection fails at once', async () => {
+    await failedPayment(true);
+    const gateway = new SimulatedGateway();
+    gateway.injectFaults('terminal', 1);
+    const r = await build(gateway).execute(approved, DECISION, NOW);
+    expect(r.action.status).toBe('FAILED');
+    expect(r.action.error_class).toBe('TERMINAL');
+    expect(r.action.attempts).toBe(1);
+    expect(gateway.snapshot().effects).toBe(0);
+  });
+});
+
 describe('the gateway answers from the counterfactual, through the real ingest path', () => {
   test('recoverable_by_gateway = true: attempted then captured land on the payment with our reference', async () => {
     await failedPayment(true);

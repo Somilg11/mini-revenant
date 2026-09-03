@@ -54,7 +54,7 @@ export default async function WhatIfPage() {
               <div className="metric" style={{ fontSize: 40, marginTop: 2, color: run.comparison.incrementalRevenuePaise > 0 ? 'var(--success)' : 'var(--text)' }} title={exactPaise(run.comparison.incrementalRevenuePaise)}>
                 {formatInrCompact(run.comparison.incrementalRevenuePaise)}
               </div>
-              <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>agent {formatInrCompact(run.comparison.agent.revenueRecoveredPaise)} − baseline {formatInrCompact(run.comparison.baseline.revenueRecoveredPaise)}</div>
+              <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>agent <span title={exactPaise(run.comparison.agent.revenueRecoveredPaise)}>{formatInrCompact(run.comparison.agent.revenueRecoveredPaise)}</span> − baseline <span title={exactPaise(run.comparison.baseline.revenueRecoveredPaise)}>{formatInrCompact(run.comparison.baseline.revenueRecoveredPaise)}</span></div>
             </div>
             <Tile label="Interventions" value={`${formatCount(run.comparison.agent.attempted)} vs ${formatCount(run.comparison.baseline.attempted)}`} note={`the agent acts on ${run.comparison.baseline.attempted > 0 ? Math.round((run.comparison.interventionsAvoided / run.comparison.baseline.attempted) * 100) : 0}% fewer — acting less is the point`} />
             <Tile label="Recovered" value={`${formatCount(run.comparison.agent.recovered)} vs ${formatCount(run.comparison.baseline.recovered)}`} note={`${formatCount(run.comparison.agent.declined.doNothing)} left alone · ${formatCount(run.comparison.agent.declined.denied)} denied · ${formatCount(run.comparison.agent.declined.deferred)} deferred on capacity`} />
@@ -86,7 +86,7 @@ export default async function WhatIfPage() {
               {(['retry', 'alternate_gateway', 'payment_link', 'alternate_method'] as const).map((s) => (
                 <div key={s} style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
                   <div className="mono" style={{ color: 'var(--text-secondary)' }}>{s}</div>
-                  <div>{formatCount(run.comparison.agent.byStrategy[s].attempted)} attempted · {formatCount(run.comparison.agent.byStrategy[s].recovered)} recovered · {formatInrCompact(run.comparison.agent.byStrategy[s].revenuePaise)}</div>
+                  <div>{formatCount(run.comparison.agent.byStrategy[s].attempted)} attempted · {formatCount(run.comparison.agent.byStrategy[s].recovered)} recovered · <span title={exactPaise(run.comparison.agent.byStrategy[s].revenuePaise)}>{formatInrCompact(run.comparison.agent.byStrategy[s].revenuePaise)}</span></div>
                 </div>
               ))}
             </div>

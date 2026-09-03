@@ -45,7 +45,7 @@ export function ActionList({ actions }: { actions: RecoveryAction[] }) {
           <span style={{ color: 'var(--text-tertiary)', fontSize: 11 }}>gateway reference</span>
           <span className="mono" style={{ fontSize: 11 }}>{a.gateway_reference ?? <span style={{ color: 'var(--text-tertiary)' }}>none — nothing reached the gateway</span>}</span>
           <span style={{ color: 'var(--text-tertiary)', fontSize: 11 }}>cost</span>
-          <span className="mono" style={{ fontSize: 11 }}>{formatInrCompact(a.cost_paise)}</span>
+          <span className="mono" style={{ fontSize: 11 }} title={`${a.cost_paise.toLocaleString('en-IN')} paise`}>{formatInrCompact(a.cost_paise)}</span>
           <span style={{ color: 'var(--text-tertiary)', fontSize: 11 }}>when</span>
           <span className="mono" style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
             reserved {a.created_at.replace('T', ' ').slice(0, 16)}

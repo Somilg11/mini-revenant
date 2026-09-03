@@ -1270,14 +1270,54 @@ that day only. It is labelled on the page.
 
 ## P18 — Polish
 
-**Status:** TODO
+**Status:** DONE — `bun run check` green
 
-- `/simulator` — seed, params, checksum, progress, five injected incidents with
-  detected/missed, two noise windows with fired/clean, the live scoreboard
-- `⌘K` command palette, `g i` / `g r` / `g p`, `Space` toggles the simulator
-- Chart rules of §11.4; Indian money grouping with the paise value in `title`
+- `/simulator` — seed, checksum, payments · events, progress and the
+  simulated clock; the live scoreboard (detection precision, recall, RCA
+  top-1, noise clean/fired) polled every 2 s while running; the five injected
+  incidents with `DETECTED` (on the right dimension or another, with
+  corroborating count and the RCA ✓/✗), `MISSED` with the miss reason, or
+  `not yet reached`, each with a *jump here*; the two noise windows with
+  their verdict; and the gateway fault injector
+- **Fault injection** (§13 step 9): `POST /api/v1/sim/gateway-fault?kind=
+  retryable|timeout|terminal&count=N` queues faults the gateway consumes
+  before its seeded draw — one draw per call either way, so an injection does
+  not shift the seeded stream for everything after it. `sim/state` shows the
+  queue. Inject, approve a pending case, watch the attempts
+- **⌘K command palette** — pages, open incidents, recent cases, and any
+  `pay_` id typed in goes straight to its audit trail. Chords `g h/i/r/p/m/w/s`,
+  `Space` toggles the simulator (never inside an input). Mounted in the root
+  layout so it works on every page
+- Nav to `/simulator` and `/whatif`, the ⌘K hint on the Command Center
+- Money: every rounded figure in a table or tile already carried its exact
+  paise in `title`; the two what-if tables and the audit header follow suit
 
-**Gate:** the full §13 demo script runs start to finish **without a reload**.
+**Gate — the §13 demo script, without a reload.** Every step has a control on
+a page and a place to point at:
+
+| Step | Where |
+|---|---|
+| 2 Command Center at 60× | `/` — Play, tiles, acceptance strip, live feed |
+| 3 An incident opens | `/incidents` → detail; `/simulator` shows detected/missed live |
+| 4 Root cause | incident detail — hypotheses, narrative with its badge |
+| 5 ₹ exposed / expected recoverable | `/` tiles (`recoverable` labelled as an expectation) |
+| 6 A case, five options side by side | `/recovery/[id]` — `StrategyComparison`, source badge |
+| 7 DENY with twelve reasons; approve a ₹40k case live | pause a merchant, approve → DENY; `ApprovalBar` on a `REQUIRE_APPROVAL` case executes and the outcome section fills on the next sweep |
+| 8 `/audit` | header link on the case; every stored stage says *reproduced* |
+| 9 Inject a gateway failure | `/simulator` → 3 × 429 → approve a case → `ActionList` shows attempts, the escalation, or the reconciled timeout |
+| 10 Kill the LLM key | the `LlmSwitch` on `/` — badges flip to `template`/`fallback`, choices identical |
+| 11 `/whatif` | the closing number, honesty banner first |
+
+Verified end to end against the replayed dataset with the API and web dev
+servers up: every page 200 with its content, faults queued and consumed
+through a live approve, evaluation scoreboard live. What a keyboard does was
+checked by reading, not by a browser — there is no browser here.
+
+**Watch for:** two things the demo assumes that this environment could not
+prove — an LLM vendor answering (no key, see P15) and the replay keeping pace
+with the relay at 60× (see P13's known limitation; at 60× most cases open
+in the end drain, so step 3 is best shown with *jump here* on the 3DS
+incident rather than by waiting).
 
 ---
 

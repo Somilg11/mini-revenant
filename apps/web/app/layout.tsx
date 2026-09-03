@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { CommandPalette } from '@/components/CommandPalette';
 
 export const metadata: Metadata = {
   title: 'Revenant Mini',
@@ -9,7 +10,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        {children}
+        <CommandPalette />
+      </body>
     </html>
   );
 }

@@ -126,6 +126,22 @@ class Runner {
     });
   }
 
+  private warming: Promise<void> | null = null;
+
+  /**
+   * Generates the dataset in the background if it is not loaded yet, so a
+   * page that shows the answer key (`/simulator`) has one to show without
+   * anyone pressing Play. Never blocks the caller; never runs twice.
+   */
+  warm(): void {
+    if (this.dataset || this.warming) return;
+    this.warming = this.ensure()
+      .catch((err) => log.warn('dataset warm-up failed', { err }))
+      .finally(() => {
+        this.warming = null;
+      });
+  }
+
   private async ensure(): Promise<void> {
     if (!this.dataset || !this.clock) await this.prepare();
     // The gateway answers from the same answer key, from the moment a payment

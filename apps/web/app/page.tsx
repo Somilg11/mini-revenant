@@ -65,6 +65,10 @@ export default async function Home() {
           <a href="/whatif" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}>
             What-if →
           </a>
+          <a href="/simulator" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}>
+            Simulator →
+          </a>
+          <span className="mono" title="⌘K opens the command palette; g i / g r / g p jump; space toggles the simulator" style={{ fontSize: 10, color: 'var(--text-tertiary)', border: '1px solid var(--border)', borderRadius: 4, padding: '1px 5px' }}>⌘K</span>
           <LlmSwitch initial={llm} />
           <DriftIndicator drift={drift} />
           {summary?.window && (
@@ -185,7 +189,7 @@ export default async function Home() {
                         {formatPct(r.acceptance_rate)}
                       </td>
                       <td className="num" style={tdNum} title={exactPaise(r.failed_amount_paise)}>
-                        {formatInrCompact(r.failed_amount_paise)}
+                        <span title={exactPaise(r.failed_amount_paise)}>{formatInrCompact(r.failed_amount_paise)}</span>
                       </td>
                     </tr>
                   ))}

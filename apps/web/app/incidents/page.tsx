@@ -171,7 +171,7 @@ export default async function IncidentsPage() {
                   <td className="num" style={td}>{i.z_score.toFixed(1)}</td>
                   <td className="num" style={td}>{formatCount(i.affected_payments)}</td>
                   <td className="num" style={td} title={exactPaise(i.revenue_at_risk_paise)}>
-                    {formatInrCompact(i.revenue_at_risk_paise)}
+                    <span title={exactPaise(i.revenue_at_risk_paise)}>{formatInrCompact(i.revenue_at_risk_paise)}</span>
                   </td>
                 </tr>
               ))}
