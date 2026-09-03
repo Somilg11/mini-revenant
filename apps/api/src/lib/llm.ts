@@ -41,6 +41,18 @@ export interface LlmStatus {
   reason?: string;
 }
 
+/**
+ * A runtime switch for the demo: "set LLM_PROVIDER=none mid-demo" without a
+ * restart. `off` forces the deterministic path whatever the environment says;
+ * `null` defers to it. Never turns a provider *on* that has no key.
+ */
+let override: 'off' | null = null;
+
+export function setLlmOverride(value: 'off' | null): LlmStatus {
+  override = value;
+  return llmStatus();
+}
+
 function modelId(): string {
   if (config.LLM_MODEL) return config.LLM_MODEL;
   const p = config.LLM_PROVIDER;
@@ -63,7 +75,7 @@ function keyFor(provider: LlmProvider): string {
  */
 export function resolveModel(): LanguageModel | null {
   const provider = config.LLM_PROVIDER;
-  if (provider === 'none') return null;
+  if (override === 'off' || provider === 'none') return null;
 
   const apiKey = keyFor(provider);
   if (!apiKey) return null;
@@ -81,6 +93,9 @@ export function resolveModel(): LanguageModel | null {
 
 export function llmStatus(): LlmStatus {
   const provider = config.LLM_PROVIDER;
+  if (override === 'off') {
+    return { enabled: false, provider, model: null, reason: 'switched off at runtime' };
+  }
   if (provider === 'none') {
     return { enabled: false, provider, model: null, reason: 'LLM_PROVIDER=none' };
   }

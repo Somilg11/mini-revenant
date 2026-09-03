@@ -13,6 +13,7 @@ import {
   type Window,
 } from '../src/db/queries.ts';
 import { assertNoCompetingRelay, MERCHANT, createdEvent, event, uid } from './helpers.ts';
+import { CUSTOMER as HELPER_CUSTOMER } from './helpers.ts';
 
 /**
  * Analytics runs against a window far outside the seeded dataset, so these
@@ -33,9 +34,12 @@ async function reset(): Promise<void> {
   await sql`DELETE FROM payments                 WHERE id         LIKE 'pay_an_%'`;
   await sql`DELETE FROM payments                 WHERE id         LIKE 'pay_t_%'`;
   await sql`DELETE FROM processed_events         WHERE event_id   LIKE 'evt_t_%'`;
+  // Both this file's customer and the helpers' default one: `makePayment`
+  // uses `createdEvent`, whose default customer only the pipeline suite used
+  // to create — so this file failed whenever it ran first on a fresh database.
   await sql`
     INSERT INTO customers (id, merchant_id, lifetime_value_paise)
-    VALUES (${CUSTOMER}, ${MERCHANT}, 500000)
+    VALUES (${CUSTOMER}, ${MERCHANT}, 500000), (${HELPER_CUSTOMER}, ${MERCHANT}, 250000)
     ON CONFLICT (id) DO NOTHING`;
 }
 

@@ -1,4 +1,4 @@
-import { sql, type Sql } from './client.ts';
+import { sql, type Queryable, type Sql } from './client.ts';
 
 /**
  * Every SQL statement in the application lives here (§5).
@@ -987,6 +987,9 @@ export async function gateCandidates(limit: number, now: string, db: Sql = sql):
     WHERE c.status = 'OPEN'
       AND c.chosen_strategy IS NOT NULL
       AND c.chosen_strategy <> 'do_nothing'
+      -- The agent proposes, then the gate judges (§7.8, §9): a case reaches
+      -- the gate only once its agent decision — llm or fallback — is on record.
+      AND EXISTS (SELECT 1 FROM agent_decisions a WHERE a.case_id = c.id)
       AND NOT EXISTS (
         SELECT 1 FROM policy_decisions d
         WHERE d.case_id = c.id
@@ -1405,4 +1408,128 @@ export async function verificationStats(db: Sql = sql): Promise<VerificationStat
       COALESCE(sum(recovered_amount_paise) FILTER (WHERE attribution = 'organic'), 0)::bigint AS organic_paise
     FROM outcome_verifications`;
   return row ?? { verified: 0, recovered: 0, lost: 0, direct: 0, assisted: 0, organic: 0, credited_paise: 0, organic_paise: 0 };
+}
+
+// ── The agent (§7.8) ─────────────────────────────────────────────────────────
+
+export interface AgentCaseRow {
+  case_id: string;
+  payment_id: string;
+  recovery_probability: number | null;
+  probability_source: 'model' | 'baseline' | null;
+  chosen_strategy: string | null;
+  strategy_options: unknown;
+  expected_value_paise: number | null;
+}
+
+/** Open cases with a strategy and no agent decision yet — the agent's worklist. */
+export async function agentPendingCases(limit: number, db: Sql = sql): Promise<AgentCaseRow[]> {
+  return db<AgentCaseRow[]>`
+    SELECT c.id AS case_id, c.payment_id, c.recovery_probability, c.probability_source,
+           c.chosen_strategy, c.strategy_options, c.expected_value_paise
+    FROM recovery_cases c
+    WHERE c.status = 'OPEN'
+      AND c.chosen_strategy IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM agent_decisions a WHERE a.case_id = c.id)
+      AND NOT EXISTS (SELECT 1 FROM policy_decisions d WHERE d.case_id = c.id)
+    ORDER BY c.opened_at
+    LIMIT ${limit}`;
+}
+
+/** The open incident this payment's slice is in, for the agent's context. */
+export async function openIncidentForPayment(
+  p: { method: string; bank: string | null; is_international: boolean; card_network: string | null },
+  db: Sql = sql,
+): Promise<IncidentRow | null> {
+  const [row] = await db<IncidentRow[]>`
+    SELECT * FROM incidents i
+    WHERE i.status = 'OPEN' AND (
+      i.dimension = 'all'
+      OR (i.dimension = 'method' AND i.dimension_value = ${p.method})
+      OR (i.dimension = 'bank' AND i.dimension_value = ${p.bank ?? 'none'})
+      OR (i.dimension = 'is_international' AND i.dimension_value = ${p.is_international ? 'true' : 'false'})
+      OR (i.dimension = 'card_network' AND i.dimension_value = ${p.card_network ?? 'none'})
+    )
+    ORDER BY i.z_score DESC LIMIT 1`;
+  return row ?? null;
+}
+
+export interface AgentDecisionRow {
+  id: string;
+  case_id: string | null;
+  incident_id: string | null;
+  prompt_hash: string;
+  raw_response: string | null;
+  parsed_choice: string | null;
+  rejected_reason: string | null;
+  source: 'llm' | 'fallback';
+  latency_ms: number | null;
+  narrative: string | null;
+  confidence: 'low' | 'medium' | 'high' | null;
+  created_at: string;
+}
+
+export async function insertAgentDecision(
+  row: Omit<AgentDecisionRow, 'created_at'> & { created_at: string },
+  db: Queryable = sql,
+): Promise<void> {
+  await db`
+    INSERT INTO agent_decisions
+      (id, case_id, incident_id, prompt_hash, raw_response, parsed_choice, rejected_reason, source, latency_ms, narrative, confidence, created_at)
+    VALUES (${row.id}, ${row.case_id}, ${row.incident_id}, ${row.prompt_hash}, ${row.raw_response}, ${row.parsed_choice},
+            ${row.rejected_reason}, ${row.source}, ${row.latency_ms}, ${row.narrative}, ${row.confidence}, ${row.created_at})`;
+}
+
+export async function agentDecisionForCase(caseId: string, db: Sql = sql): Promise<AgentDecisionRow | null> {
+  const [row] = await db<AgentDecisionRow[]>`
+    SELECT * FROM agent_decisions WHERE case_id = ${caseId} ORDER BY created_at DESC, id DESC LIMIT 1`;
+  return row ?? null;
+}
+
+export async function listAgentDecisions(limit: number, db: Sql = sql): Promise<(AgentDecisionRow & { payment_id: string | null })[]> {
+  return db<(AgentDecisionRow & { payment_id: string | null })[]>`
+    SELECT a.*, c.payment_id
+    FROM agent_decisions a
+    LEFT JOIN recovery_cases c ON c.id = a.case_id
+    ORDER BY a.created_at DESC, a.id DESC LIMIT ${limit}`;
+}
+
+export interface AgentStats {
+  total: number;
+  llm: number;
+  fallback: number;
+  overridden: number;
+  cases: number;
+  incidents: number;
+  mean_latency_ms: number | null;
+}
+
+export async function agentStats(db: Sql = sql): Promise<AgentStats> {
+  const [row] = await db<AgentStats[]>`
+    SELECT
+      count(*)::int AS total,
+      count(*) FILTER (WHERE source = 'llm')::int AS llm,
+      count(*) FILTER (WHERE source = 'fallback')::int AS fallback,
+      count(*) FILTER (WHERE rejected_reason IS NOT NULL)::int AS overridden,
+      count(*) FILTER (WHERE case_id IS NOT NULL)::int AS cases,
+      count(*) FILTER (WHERE incident_id IS NOT NULL)::int AS incidents,
+      avg(latency_ms) FILTER (WHERE source = 'llm')::float AS mean_latency_ms
+    FROM agent_decisions`;
+  return row ?? { total: 0, llm: 0, fallback: 0, overridden: 0, cases: 0, incidents: 0, mean_latency_ms: null };
+}
+
+/** Diagnosed incidents with no narrative yet. */
+export async function incidentsAwaitingNarrative(limit: number, db: Sql = sql): Promise<IncidentRow[]> {
+  return db<IncidentRow[]>`
+    SELECT * FROM incidents WHERE root_cause IS NOT NULL AND narrative IS NULL
+    ORDER BY opened_at LIMIT ${limit}`;
+}
+
+export async function setIncidentNarrative(
+  id: string,
+  narrative: string,
+  source: 'llm' | 'template',
+  db: Queryable = sql,
+): Promise<void> {
+  await db`UPDATE incidents SET narrative = ${narrative}, narrative_source = ${source} WHERE id = ${id}`;
 }

@@ -4,6 +4,7 @@ import { fetchIncident, fetchIncidentSeries } from '@/lib/api';
 import { formatInrCompact, formatPct, formatCount, exactPaise } from '@/lib/format';
 import { GateChecklist } from '@/components/GateChecklist';
 import { HypothesisCard } from '@/components/HypothesisCard';
+import { SourceBadge } from '@/components/SourceBadge';
 
 export const dynamic = 'force-dynamic';
 
@@ -99,6 +100,22 @@ export default async function IncidentPage({ params }: { params: Promise<{ id: s
       )}
 
       <section className="card" style={{ marginTop: 8 }}>
+        <div className="label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          Narrative {incident.narrative_source && <SourceBadge source={incident.narrative_source} />}
+        </div>
+        {incident.narrative ? (
+          <p style={{ margin: '8px 0 0', fontSize: 13, lineHeight: 1.7 }}>{incident.narrative}</p>
+        ) : (
+          <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-tertiary)' }}>
+            {incident.root_cause ? 'Not written yet — the narrative follows the diagnosis on the next sweep.' : 'Not written yet — the narrative follows the diagnosis.'}
+          </div>
+        )}
+        <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 8 }}>
+          Every figure in the narrative is one the detector or the root-cause analysis computed; the model, when one is on, only phrases them.
+        </div>
+      </section>
+
+      <section className="card" style={{ marginTop: 8 }}>
         <div className="label">The five gates</div>
         <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>
           Every gate must pass. One threshold fires on everything; five is why the two unlabelled
@@ -150,8 +167,7 @@ export default async function IncidentPage({ params }: { params: Promise<{ id: s
             </tbody>
           </table>
           <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 8 }}>
-            Highlighted rows are at or after the detection moment. Root-cause apportionment and the
-            narrative arrive in P8 and P15.
+            Highlighted rows are at or after the detection moment.
           </div>
         </section>
       )}

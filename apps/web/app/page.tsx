@@ -1,4 +1,4 @@
-import { fetchDashboard } from '@/lib/api';
+import { fetchDashboard, fetchLlmStatus } from '@/lib/api';
 import { simApi, type SimState } from '@/lib/sim';
 import { SimControlBar } from '@/components/SimControlBar';
 import { LiveFeed } from '@/components/LiveFeed';
@@ -7,6 +7,7 @@ import { formatInrCompact, formatPct, formatCount, exactPaise } from '@/lib/form
 import { MetricTile } from '@/components/MetricTile';
 import { AcceptanceStrip } from '@/components/AcceptanceStrip';
 import { DriftIndicator } from '@/components/DriftIndicator';
+import { LlmSwitch } from '@/components/LlmSwitch';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,9 +23,10 @@ export const dynamic = 'force-dynamic';
  * P6, when there is a clock to drive them.
  */
 export default async function Home() {
-  const [{ ready, summary, acceptance, drift, breakdown, error }, sim] = await Promise.all([
+  const [{ ready, summary, acceptance, drift, breakdown, error }, sim, llm] = await Promise.all([
     fetchDashboard(),
     simApi.state().catch((): SimState | null => null),
+    fetchLlmStatus(),
   ]);
 
   const dataset = ready?.checks.dataset ?? null;
@@ -60,6 +62,7 @@ export default async function Home() {
           <a href="/policy" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}>
             Policy →
           </a>
+          <LlmSwitch initial={llm} />
           <DriftIndicator drift={drift} />
           {summary?.window && (
             <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }} className="mono">

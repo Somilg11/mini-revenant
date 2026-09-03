@@ -32,7 +32,7 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
   } catch {
     notFound();
   }
-  const { case: c, odds, features, decision, policy, actions, outcome } = detail;
+  const { case: c, odds, features, decision, policy, actions, outcome, agent } = detail;
   const latest = policy.at(-1) ?? null;
   const awaiting = latest?.verdict === 'REQUIRE_APPROVAL' && c.status === 'OPEN';
   const code = c.failure_code ?? (c.abandoned ? 'CHECKOUT_ABANDONED' : '—');
@@ -74,6 +74,30 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
           <StrategyComparison options={decision.options} chosen={decision.chosen} multiplier={decision.customer_multiplier} />
         </section>
       )}
+
+      <section className="card" style={{ marginTop: 8 }}>
+        <div className="label" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          Agent proposal {agent && <SourceBadge source={agent.source} />}
+          {agent?.confidence && <span className="mono" style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>confidence {agent.confidence}</span>}
+        </div>
+        {agent ? (
+          <div style={{ marginTop: 8 }}>
+            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.7, color: 'var(--text)' }}>{agent.narrative}</p>
+            {agent.rejected_reason && (
+              <div style={{ marginTop: 8, fontSize: 12, color: 'var(--warning)', lineHeight: 1.6 }}>
+                The model proposed <span className="mono">{agent.parsed_choice}</span> and was overridden: {agent.rejected_reason}. The strategy engine's choice stands — the model may pick among the options that make money, never one that loses it.
+              </div>
+            )}
+            <div className="mono" style={{ marginTop: 8, fontSize: 10, color: 'var(--text-tertiary)' }}>
+              choice {c.chosen_strategy} · prompt {agent.prompt_hash.slice(0, 8)}…{agent.prompt_hash.slice(-4)}
+              {agent.latency_ms !== null && ` · ${agent.latency_ms} ms`}
+              {agent.source === 'fallback' && !agent.rejected_reason && ' · no model answered — deterministic path'}
+            </div>
+          </div>
+        ) : (
+          <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-tertiary)' }}>The agent has not seen this case yet.</div>
+        )}
+      </section>
 
       {latest && (
         <section className="card" style={{ marginTop: 8 }}>

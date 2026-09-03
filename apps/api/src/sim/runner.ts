@@ -7,6 +7,7 @@ import { sweepAbandoned } from '../app/abandonment.ts';
 import { catchUp as detectionCatchUp } from '../app/detection.ts';
 import { diagnosePending } from '../app/rca.ts';
 import { openCases } from '../app/recovery.ts';
+import { narrateIncidents, proposeForCases } from '../app/agent.ts';
 import { runGate } from '../app/policy.ts';
 import { verifyOutcomes } from '../app/verify.ts';
 import { gateway, type GatewayStats } from './gateway.ts';
@@ -376,9 +377,14 @@ class Runner {
         // Diagnose immediately: RCA reads the incident's own window, and the
         // sooner it runs the fewer rows it has to sift.
         if (result.opened.length > 0) await diagnosePending();
+        // Every diagnosed incident gets its narrative — llm or template.
+        await narrateIncidents(new Date(this.abandonmentSettledMs));
         // Cases follow detection: a failure inside a live incident is scored
         // with `incidentActive` set, which lifts its retry odds (§7.5).
         await openCases(new Date(this.abandonmentSettledMs));
+        // The agent proposes on every new case (§7.8); a proposal is an input
+        // to the gate, not an action.
+        await proposeForCases(new Date(this.abandonmentSettledMs));
         // Every proposal passes the gate before anything moves money, and
         // what the gate clears is executed in the same sweep (§9).
         await runGate(new Date(this.abandonmentSettledMs));
@@ -472,11 +478,16 @@ class Runner {
     });
     this.lastDetectionMs = endMs;
     await diagnosePending(500);
+    await narrateIncidents(new Date(endMs), 500);
     // Keep opening until the worklist is empty: the last simulated minutes
     // produce failures too, and a case that never opens is revenue never priced.
     for (let i = 0; i < 200; i += 1) {
       const r = await openCases(new Date(endMs), 500);
       if (r.opened === 0 && r.considered === 0) break;
+    }
+    for (let i = 0; i < 200; i += 1) {
+      const a = await proposeForCases(new Date(endMs), 500);
+      if (a.proposed === 0) break;
     }
     // Gate and execute in batches, not gate-everything-then-execute: rules
     // 7–9 read the actions already taken, so a batch that executes before the

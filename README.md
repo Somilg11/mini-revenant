@@ -13,7 +13,7 @@ DETECT → DIAGNOSE → QUANTIFY → DECIDE → GATE → ACT → VERIFY → LEAR
 It does not retry payments. It decides which failures are worth money, proves
 why, and refuses to act when acting loses.
 
-Today it detects degradations per dimension, diagnoses them, prices every unresolved failure with a trained, calibrated model that falls back to a measured baseline when unplugged, chooses an intervention by expected value — with `do_nothing` on every ballot — passes every proposal through a twelve-rule policy gate whose every decision, ALLOWs included, is stored with the hash of its inputs, and executes what the gate clears against a simulated gateway that answers from pre-decided counterfactuals and misbehaves on purpose (429s, timeouts with unknown outcomes, hard rejections) so the retry, reconcile and escalate paths are exercised rather than merely written, then verifies every outcome once — `direct`, `assisted` or `organic`, and organic credits zero — and draws the live calibration curve from predictions that have met reality: an
+Today it detects degradations per dimension, diagnoses them, prices every unresolved failure with a trained, calibrated model that falls back to a measured baseline when unplugged, chooses an intervention by expected value — with `do_nothing` on every ballot — passes every proposal through a twelve-rule policy gate whose every decision, ALLOWs included, is stored with the hash of its inputs, and executes what the gate clears against a simulated gateway that answers from pre-decided counterfactuals and misbehaves on purpose (429s, timeouts with unknown outcomes, hard rejections) so the retry, reconcile and escalate paths are exercised rather than merely written, then verifies every outcome once — `direct`, `assisted` or `organic`, and organic credits zero — draws the live calibration curve from predictions that have met reality, and lets a language model — any vendor, or none — phrase the narratives and propose among the money-making options, with every proposal reconciled against the arithmetic and every call written to an audit table with its prompt hash: an
 eight-hour collapse in international card acceptance moves the overall failure
 rate about seven points — a wobble any dashboard would ignore — and is reported
 as `is_international=true`, carrying 100% of the excess failures.
@@ -179,7 +179,11 @@ the same correct response: take the deterministic choice and record
 `source: 'fallback'`. There is no throwing path.
 
 **The pipeline is correct with the LLM switched off, and the demo proves it by
-toggling it live.**
+toggling it live** — `POST /api/v1/llm/off` (or the switch on the dashboard)
+forces the deterministic path without a restart; `/on` lifts it. Every
+narrative carries `llm` or `template`, every proposal `llm` or `fallback`,
+and a proposal the arithmetic refuses (an option with EV ≤ 0) is overridden
+with the reason on the case page.
 
 ---
 

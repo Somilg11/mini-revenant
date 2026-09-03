@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { actionStats, actionsForCase, candidateForPayment, caseStats, getCase, listCases, verificationForCase, verificationStats } from '../../db/queries.ts';
+import { actionStats, actionsForCase, agentDecisionForCase, candidateForPayment, caseStats, getCase, listCases, verificationForCase, verificationStats } from '../../db/queries.ts';
 import { baselineOdds } from '../../domain/recovery-model.ts';
 import { decide, featuresOf } from '../../app/recovery.ts';
 import { approveCase, rejectCase } from '../../app/policy.ts';
@@ -51,12 +51,20 @@ cases.get('/api/v1/cases/:id', async (c) => {
   // audit what was decided at the time.
   const decision = candidate ? decide(candidate, row.recovery_probability) : null;
 
-  const [policyDecisions, actions, outcome] = await Promise.all([decisionsForCase(id), actionsForCase(id), verificationForCase(id)]);
+  const [policyDecisions, actions, outcome, agentDecision] = await Promise.all([
+    decisionsForCase(id),
+    actionsForCase(id),
+    verificationForCase(id),
+    agentDecisionForCase(id),
+  ]);
 
   return c.json({
     case: row,
     features,
     odds: features ? baselineOdds(features) : null,
+    // The model's proposal — or the deterministic fallback — with its source,
+    // its prompt hash and, when it was overridden, why.
+    agent: agentDecision,
     policy: policyDecisions,
     actions,
     // Where attribution has not run the UI says `unattributed`; `null` here is

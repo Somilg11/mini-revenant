@@ -378,7 +378,34 @@ export interface CaseDetail {
   actions: RecoveryAction[];
   /** `null` until verification has run — unattributed, never a zero. */
   outcome: OutcomeVerification | null;
+  /** The model's proposal or the deterministic fallback; `null` before the agent has seen the case. */
+  agent: AgentDecision | null;
 }
+
+export interface AgentDecision {
+  id: string;
+  case_id: string | null;
+  incident_id: string | null;
+  prompt_hash: string;
+  raw_response: string | null;
+  parsed_choice: string | null;
+  rejected_reason: string | null;
+  source: 'llm' | 'fallback';
+  latency_ms: number | null;
+  narrative: string | null;
+  confidence: 'low' | 'medium' | 'high' | null;
+  created_at: string;
+}
+
+export interface LlmStatus {
+  enabled: boolean;
+  provider: string;
+  model: string | null;
+  reason?: string;
+}
+
+export const fetchLlmStatus = () =>
+  api<LlmStatus>('/api/v1/llm').catch((): LlmStatus => ({ enabled: false, provider: 'none', model: null, reason: 'API unreachable' }));
 
 export interface OutcomeVerification {
   id: string;

@@ -19,7 +19,9 @@ export function SourceBadge({ source }: { source: string | null | undefined }) {
             : 'Written by the language model'
           : source === 'baseline'
             ? 'Scored from the measured family rates — no model active'
-            : 'Deterministic template — no language model active'
+            : source === 'fallback'
+              ? 'Deterministic fallback — the strategy engine chose, the narrative is templated'
+              : 'Deterministic template — no language model active'
       }
       style={{
         display: 'inline-block',
