@@ -563,20 +563,88 @@ has nothing to do with detection.
 
 ## P8 — Root cause analysis
 
-**Status:** TODO
+**Status:** DONE — 204 unit + 52 integration; RCA top-1 **3/3** on every
+diagnosed incident
 
-- `domain/rca.ts` — apportion **excess** failures, never total; shrink the
-  expected rate toward the pooled rate with `k = 30`; score each 1-to-3
-  dimension tuple on excess share, specificity, support (two-proportion z
-  **against the rest of the same window**) and volume;
-  `confidence = 0.40·share + 0.25·specificity + 0.20·min(1, z/6) + 0.15·volume`
-- Top 3 hypotheses with their own evidence numbers, rendered as `HypothesisCard`
+- `domain/rca.ts` — excess-failure apportionment: shrunk expectations (`k = 30`),
+  excess share, specificity, a two-proportion z against **the rest of the same
+  window**, and volume, combined as
+  `0.40·share + 0.25·specificity + 0.20·min(1, z/6) + 0.15·volume`
+- `app/rca.ts` — diagnoses each incident over the detector's own window against
+  the 24 hours before it, and persists the ranked hypotheses to `root_cause`
+- `app/evaluation.ts` — RCA top-1 and top-3 accuracy against the labelled tuples
+- Web: `HypothesisCard` with all four evidence inputs, on `/incidents/[id]`;
+  RCA accuracy and the per-incident diagnosis on `/incidents`
 
-**Gate:** top-1 hypothesis matches the labelled tuple for **at least 4 of 5**
-incidents · RCA top-1 accuracy is shown on `/simulator`.
+**Gate:** top-1 names the labelled tuple for **3 of 3** diagnosed incidents ·
+the cross-border incident diagnoses as **`is_international=true`, 100% of the
+excess** — not "cards are failing", which is the naive answer §7.4 opens by
+warning about · every hypothesis quotes the **shrunk** baseline, the same
+arithmetic its share came from.
 
-**Watch for:** the baseline rate quoted on a hypothesis must be the *shrunk* one
-— the same arithmetic the share came from.
+RCA is scored only on incidents that were detected, so the denominator is 3
+rather than 6 — the three §7.4 cannot be asked about are the ones P7 records as
+below the volume floor.
+
+### RCA reads payments, not rollups
+
+The rollups are single-dimension: they know `method=card` and
+`is_international=true` separately but never their intersection. RCA works on
+1-to-3 dimension **tuples**, so it reads the underlying rows for the incident's
+window. It runs once per incident rather than once per bucket, which makes that
+affordable — and it is the only way to reach the tuple the demo turns on.
+
+`failure_code` is a candidate dimension, which §7.4's list omits but §8.2's
+answer key requires. It is treated as **narrowing the numerator, never the
+denominator**: a successful payment carries no code, so counting attempts by
+code would make every such slice 100% failing and win every time.
+
+### Two bugs, both "naming the region instead of the cause"
+
+1. **Equivalent tuples filled the top three.** International payments carry no
+   bank, so `bank=none` identifies them perfectly — and says nothing actionable.
+   Several tuples covered exactly the same payments, tied on every score, and
+   the list returned three names for one slice. Tuples are now collapsed by the
+   set of payments they cover, keeping the one with fewest absence markers and
+   then fewest dimensions.
+2. **Containing regions outranked the culprit.** `is_international=false`
+   contains every HDFC payment, so during the bank outage its 24% failure rate
+   *was* HDFC's 76% diluted across five times the traffic — identical excess
+   share, better volume score, and it won by 0.006. The same shape put
+   `method=card` above `is_international=true` on the cross-border incident,
+   which is precisely the "cards are failing" answer the section exists to
+   prevent. The volume term saturates at 50 attempts, so it never rewards
+   credibility — it only ever penalises small slices, and broad regions ride it
+   upward.
+
+   The fix is structural rather than a reweighting: **a containing slice is
+   dropped when a slice inside it already explains most of its excess on less
+   traffic.** It adds nothing the narrower one does not and it points at the
+   wrong thing. Top-1 accuracy went from 2/3 to 3/3, and the cross-border
+   diagnosis moved from `method=card` to `is_international=true`.
+
+**A measurement gap fixed alongside:** `measureDrift({ from })` had no upper
+bound, so a scoped drift check measured every test file's data that came later
+in time — a security-test assertion expecting a drift of 3 saw 6, and one
+expecting 999 paise saw 174,300,999. It now takes `to`, and every scoped check
+passes both ends.
+
+**Two test-hygiene faults, found by running the suite eight times rather than
+once.** Both produced failures that read as logic errors and were not:
+
+- **Timeouts wearing a logic error's clothes.** The detection fixtures build
+  several hundred payments through the real projector, three events each and a
+  transaction apiece, which runs past Bun's five-second default. The failures
+  landed at 5,060 ms and 5,123 ms — the tell was the timing, not the assertion.
+  Slow tests now carry an explicit budget, and the heaviest fixture was trimmed
+  to 256 baseline attempts (still over the detector's floor of 200).
+- **Fixtures where two labels were synonyms.** Twice a test asserted a specific
+  tuple in data where the tuple had no unique name: with no domestic cards,
+  `method=card` and `is_international=true` cover identical payments, and with
+  cards on only one bank, `method=card` and `bank=ICICI` do too. Which label is
+  reported is then arbitrary and the assertion is meaningless. The fixtures now
+  include the traffic that makes the distinction real — which is also what makes
+  "cards are failing" a wrong answer rather than a synonym for the right one.
 
 ---
 

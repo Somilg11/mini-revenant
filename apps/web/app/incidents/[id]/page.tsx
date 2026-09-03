@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 import { fetchIncident, fetchIncidentSeries } from '@/lib/api';
 import { formatInrCompact, formatPct, formatCount, exactPaise } from '@/lib/format';
 import { GateChecklist } from '@/components/GateChecklist';
+import { HypothesisCard } from '@/components/HypothesisCard';
 
 export const dynamic = 'force-dynamic';
 
@@ -69,6 +70,33 @@ export default async function IncidentPage({ params }: { params: Promise<{ id: s
           titlePaise={incident.revenue_at_risk_paise}
         />
       </section>
+
+      {incident.root_cause && incident.root_cause.hypotheses.length > 0 && (
+        <section style={{ marginTop: 8 }}>
+          <div className="card" style={{ marginBottom: 8 }}>
+            <div className="label">Root cause</div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6, lineHeight: 1.7 }}>
+              Ranked by <strong style={{ fontWeight: 510 }}>excess</strong> failures, never total
+              ones. Total failures name the busiest slice — during a bank outage that is whichever
+              method carries its traffic. Excess names the slice that <em>changed</em>.
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 8 }}>
+              {incident.root_cause.window_failures} failures in{' '}
+              {incident.root_cause.window_attempts} attempts ·{' '}
+              {incident.root_cause.incident_excess.toFixed(1)} of them beyond expectation ·
+              expectations shrunk toward a {formatPct(incident.root_cause.pooled_rate)} pooled rate
+              {incident.root_cause.used_window_as_reference &&
+                ' · no history available, so the window is its own reference'}
+            </div>
+          </div>
+
+          <div style={{ display: 'grid', gap: 8 }}>
+            {incident.root_cause.hypotheses.map((h, i) => (
+              <HypothesisCard key={h.label} h={h} rank={i} />
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="card" style={{ marginTop: 8 }}>
         <div className="label">The five gates</div>

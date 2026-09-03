@@ -209,17 +209,19 @@ export interface Drift {
  * Compares the stored (incrementally maintained) rollups against a fresh
  * computation **without writing anything**. Displayed, not corrected (§10).
  */
-export async function measureDrift(opts: { from?: string } = {}): Promise<Drift> {
+export async function measureDrift(opts: { from?: string; to?: string } = {}): Promise<Drift> {
   // `from` is interpolated into raw SQL below, because the fragment is built by
   // string concatenation across a UNION ALL. Normalise it to a fixed-format ISO
   // timestamp first: an unparseable value throws here rather than reaching the
   // database, and the output can contain no quote to break out of.
-  let fromIso: string | null = null;
-  if (opts.from !== undefined) {
-    const ms = Date.parse(opts.from);
-    if (Number.isNaN(ms)) throw new ValidationError('measureDrift: invalid `from`', { from: opts.from });
-    fromIso = new Date(ms).toISOString();
-  }
+  const normalise = (v: string | undefined, name: string): string | null => {
+    if (v === undefined) return null;
+    const ms = Date.parse(v);
+    if (Number.isNaN(ms)) throw new ValidationError(`measureDrift: invalid \`${name}\``, { [name]: v });
+    return new Date(ms).toISOString();
+  };
+  const fromIso = normalise(opts.from, 'from');
+  const toIso = normalise(opts.to, 'to');
 
   const selects = (Object.keys(DIMENSION_SQL) as RollupDimension[]).map(
     (dim) => `
@@ -237,13 +239,16 @@ export async function measureDrift(opts: { from?: string } = {}): Promise<Drift>
         COALESCE(sum(p.amount_paise) FILTER (WHERE p.state = 'CAPTURED'), 0)::bigint
           AS captured_amount_paise
       FROM payments p
-      ${fromIso ? `WHERE p.created_at >= '${fromIso}'` : ''}
+      ${[fromIso ? `p.created_at >= '${fromIso}'` : '', toIso ? `p.created_at < '${toIso}'` : ''].filter(Boolean).length ? `WHERE ${[fromIso ? `p.created_at >= '${fromIso}'` : '', toIso ? `p.created_at < '${toIso}'` : ''].filter(Boolean).join(' AND ')}` : ''}
       GROUP BY 1, 2, 3, 4`,
   );
 
-  const bucketFilter = fromIso
-    ? `AND COALESCE(r.bucket_start, c.bucket_start) >= '${fromIso}'`
-    : '';
+  const bucketFilter = [
+    fromIso ? `AND COALESCE(r.bucket_start, c.bucket_start) >= '${fromIso}'` : '',
+    toIso ? `AND COALESCE(r.bucket_start, c.bucket_start) < '${toIso}'` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
 
   const [row] = await sql.unsafe<
     {

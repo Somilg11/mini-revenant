@@ -204,3 +204,99 @@ export async function scoreNoiseWindows(
   }
   return { windows: scored, clean: scored.every((w) => w.firedIncidents === 0) };
 }
+
+// ── RCA scoring (§8.4) ───────────────────────────────────────────────────────
+
+export interface RcaScore {
+  scored: number;
+  top1Correct: number;
+  top3Correct: number;
+  top1Accuracy: number | null;
+  results: {
+    kind: string;
+    labelled: Record<string, string>;
+    incidentId: string | null;
+    top1: string | null;
+    top1Confidence: number | null;
+    top1ExcessShare: number | null;
+    top1Correct: boolean;
+    top3: string[];
+    top3Correct: boolean;
+  }[];
+}
+
+/**
+ * Does a hypothesis name the tuple the generator actually degraded?
+ *
+ * A hit means every dimension the hypothesis names agrees with the labelled
+ * tuple. It need not name all of them: `is_international=true × method=card` is
+ * a correct diagnosis of `is_international × card × THREEDS_FAILED`, just a less
+ * sharp one. Naming a dimension the label contradicts is a miss.
+ */
+function hypothesisMatches(
+  tuple: Record<string, string>,
+  labelled: Record<string, string>,
+): boolean {
+  const named = Object.keys(tuple);
+  if (named.length === 0) return false;
+  let overlap = 0;
+  for (const [k, v] of Object.entries(tuple)) {
+    const expected = labelled[k];
+    if (expected === undefined) continue;
+    if (expected !== v) return false;
+    overlap += 1;
+  }
+  // It has to actually intersect the labelled tuple, not merely avoid
+  // contradicting it.
+  return overlap > 0;
+}
+
+export async function scoreRca(): Promise<RcaScore> {
+  const truth = await groundTruthIncidents();
+  const detected = await listIncidents('ALL', 500);
+
+  const results: RcaScore['results'] = [];
+
+  for (const gt of truth) {
+    const overlapping = detected.filter((d) => overlaps(d, gt.started_at, gt.ended_at));
+    // Score the diagnosis of the incident that best identified the slice.
+    const withCause = overlapping.filter(
+      (d) => d.root_cause !== null && d.root_cause !== undefined,
+    );
+    if (withCause.length === 0) continue;
+
+    const onDimension = withCause.find((d) => {
+      const v = gt.dimensions[d.dimension];
+      return v !== undefined && v === d.dimension_value;
+    });
+    const chosen = onDimension ?? withCause[0]!;
+    const rc = chosen.root_cause as { hypotheses?: { label: string; tuple: Record<string, string>; confidence: number; excessShare: number }[] };
+    const hypotheses = rc.hypotheses ?? [];
+    if (hypotheses.length === 0) continue;
+
+    const top = hypotheses[0]!;
+    const top1Correct = hypothesisMatches(top.tuple, gt.dimensions);
+    const top3Correct = hypotheses.slice(0, 3).some((h) => hypothesisMatches(h.tuple, gt.dimensions));
+
+    results.push({
+      kind: gt.kind,
+      labelled: gt.dimensions,
+      incidentId: chosen.id,
+      top1: top.label,
+      top1Confidence: top.confidence,
+      top1ExcessShare: top.excessShare,
+      top1Correct,
+      top3: hypotheses.slice(0, 3).map((h) => h.label),
+      top3Correct,
+    });
+  }
+
+  const top1Correct = results.filter((r) => r.top1Correct).length;
+  return {
+    scored: results.length,
+    top1Correct,
+    top3Correct: results.filter((r) => r.top3Correct).length,
+    top1Accuracy: results.length === 0 ? null : top1Correct / results.length,
+    results,
+  };
+}

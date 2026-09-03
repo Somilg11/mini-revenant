@@ -5,6 +5,7 @@ import { pendingOutbox } from '../app/relay.ts';
 import { ABANDONMENT_IDLE_MINUTES } from '../domain/payment-state.ts';
 import { sweepAbandoned } from '../app/abandonment.ts';
 import { catchUp as detectionCatchUp } from '../app/detection.ts';
+import { diagnosePending } from '../app/rca.ts';
 import { listMerchants } from '../db/queries.ts';
 import { log } from '../lib/logger.ts';
 import { SimClock, type ClockState } from './clock.ts';
@@ -347,10 +348,13 @@ class Runner {
     if (nowMs - this.lastDetectionMs >= 5 * 60_000) {
       try {
         // Only judge buckets the abandonment sweep has already settled.
-        const { sweptTo } = await detectionCatchUp(new Date(this.lastDetectionMs), {
+        const { sweptTo, result } = await detectionCatchUp(new Date(this.lastDetectionMs), {
           until: new Date(this.abandonmentSettledMs),
         });
         this.lastDetectionMs = sweptTo.getTime();
+        // Diagnose immediately: RCA reads the incident's own window, and the
+        // sooner it runs the fewer rows it has to sift.
+        if (result.opened.length > 0) await diagnosePending();
       } catch (err) {
         // Detection failing must not stop the replay: the pipeline is the
         // thing under test, and a stalled clock hides that it still works.
@@ -428,6 +432,7 @@ class Runner {
       maxBuckets: 4000,
     });
     this.lastDetectionMs = endMs;
+    await diagnosePending(500);
     log.info('simulator finalised', {
       abandoned,
       incidentsOpened: result.opened.length,

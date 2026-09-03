@@ -493,3 +493,52 @@ export async function groundTruthIncidents(db: Sql = sql): Promise<GroundTruthIn
            detected_incident_id
     FROM ground_truth_incidents ORDER BY started_at`;
 }
+
+// ── Root cause analysis (§7.4) ───────────────────────────────────────────────
+
+export interface RcaRow {
+  failed: boolean;
+  bank: string | null;
+  method: string;
+  amount_band: string;
+  is_international: string;
+  card_network: string | null;
+  card_country: string | null;
+  failure_code: string | null;
+}
+
+/**
+ * Raw payment rows for RCA.
+ *
+ * RCA works on 1-to-3 dimension **tuples**, which the single-dimension rollups
+ * cannot answer — a rollup knows `method=card` and `is_international=true`
+ * separately but never their intersection. It runs once per incident rather
+ * than once per bucket, so reading the underlying rows is affordable and it is
+ * the only way to reach the tuple the demo turns on.
+ */
+export async function rcaObservations(
+  from: string,
+  to: string,
+  db: Sql = sql,
+): Promise<RcaRow[]> {
+  return db<RcaRow[]>`
+    SELECT
+      (p.state <> 'CAPTURED') AS failed,
+      p.bank,
+      p.method::text AS method,
+      CASE
+        WHEN p.amount_paise >= 5000000 THEN '>50k'
+        WHEN p.amount_paise >= 1000000 THEN '10k-50k'
+        WHEN p.amount_paise >=  200000 THEN '2k-10k'
+        WHEN p.amount_paise >=   50000 THEN '500-2k'
+        ELSE '<500' END AS amount_band,
+      CASE WHEN p.is_international THEN 'true' ELSE 'false' END AS is_international,
+      p.card_network,
+      p.card_country,
+      -- An abandoned payment carries no gateway code, but "the customer left"
+      -- is exactly the kind of cause RCA exists to name.
+      COALESCE(p.failure_code, CASE WHEN p.abandoned THEN 'CHECKOUT_ABANDONED' END) AS failure_code
+    FROM payments p
+    WHERE p.created_at >= ${from} AND p.created_at < ${to}
+  `;
+}

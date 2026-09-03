@@ -11,6 +11,12 @@ import { assertNoCompetingRelay, MERCHANT, createdEvent, event, uid } from './he
 
 const app = createApp();
 const WINDOW_FROM = '2028-01-01T00:00:00.000Z';
+/**
+ * Drift checks are bounded at both ends. An open-ended `from` measures every
+ * other test file's data that happens to sit later in time, and then fails on
+ * counts for reasons that have nothing to do with the code under test.
+ */
+const WINDOW_TO = '2029-01-01T00:00:00.000Z';
 const T = (m: number) => new Date(Date.parse('2028-05-01T10:00:00.000Z') + m * 60_000).toISOString();
 const CUSTOMER = 'cus_sec_audit';
 
@@ -161,7 +167,7 @@ describe('drift detection has no blind spots', () => {
       UPDATE metrics_rollup SET abandoned = abandoned + 3
       WHERE dimension = 'all' AND bucket_start >= ${WINDOW_FROM}`;
 
-    const drift = await measureDrift({ from: WINDOW_FROM });
+    const drift = await measureDrift({ from: WINDOW_FROM, to: WINDOW_TO });
     expect(drift.rows).toBeGreaterThan(0);
     expect(drift.abandoned).toBe(3);
   });
@@ -173,7 +179,7 @@ describe('drift detection has no blind spots', () => {
       UPDATE metrics_rollup SET captured_amount_paise = captured_amount_paise + 999
       WHERE dimension = 'all' AND bucket_start >= ${WINDOW_FROM}`;
 
-    const drift = await measureDrift({ from: WINDOW_FROM });
+    const drift = await measureDrift({ from: WINDOW_FROM, to: WINDOW_TO });
     expect(drift.rows).toBeGreaterThan(0);
     expect(drift.capturedAmountPaise).toBe(999);
   });
@@ -195,7 +201,7 @@ describe('drift detection has no blind spots', () => {
       SELECT abandoned FROM metrics_rollup
       WHERE dimension = 'all' AND bucket_start >= ${WINDOW_FROM}`;
     expect(r?.abandoned).toBe(0);
-    expect((await measureDrift({ from: WINDOW_FROM })).rows).toBe(0);
+    expect((await measureDrift({ from: WINDOW_FROM, to: WINDOW_TO })).rows).toBe(0);
   });
 
   test('measureDrift refuses an unparseable window rather than interpolating it', async () => {

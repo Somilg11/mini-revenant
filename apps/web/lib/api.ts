@@ -210,6 +210,17 @@ export interface Gate {
   detail: string;
 }
 
+export interface RootCause {
+  hypotheses: import('@/components/HypothesisCard').Hypothesis[];
+  incident_excess: number;
+  window_attempts: number;
+  window_failures: number;
+  pooled_rate: number;
+  used_window_as_reference: boolean;
+  window: { from: string; to: string };
+  baseline: { from: string; to: string };
+}
+
 export interface Incident {
   id: string;
   merchant_id: string | null;
@@ -224,6 +235,7 @@ export interface Incident {
   gates: Gate[];
   affected_payments: number;
   revenue_at_risk_paise: number;
+  root_cause: RootCause | null;
   narrative: string | null;
   narrative_source: 'llm' | 'template' | null;
 }
@@ -243,7 +255,26 @@ export interface DetectionMatch {
   missReason: string | null;
 }
 
+export interface RcaResult {
+  kind: string;
+  labelled: Record<string, string>;
+  incidentId: string | null;
+  top1: string | null;
+  top1Confidence: number | null;
+  top1ExcessShare: number | null;
+  top1Correct: boolean;
+  top3: string[];
+  top3Correct: boolean;
+}
+
 export interface Evaluation {
+  rca: {
+    scored: number;
+    top1_correct: number;
+    top3_correct: number;
+    top1_accuracy: number | null;
+    results: RcaResult[];
+  } | null;
   detection: {
     precision: number | null;
     recall: number | null;

@@ -13,6 +13,11 @@ DETECT → DIAGNOSE → QUANTIFY → DECIDE → GATE → ACT → VERIFY → LEAR
 It does not retry payments. It decides which failures are worth money, proves
 why, and refuses to act when acting loses.
 
+Today it detects degradations per dimension and diagnoses them: an
+eight-hour collapse in international card acceptance moves the overall failure
+rate about seven points — a wobble any dashboard would ignore — and is reported
+as `is_international=true`, carrying 100% of the excess failures.
+
 - **Spec:** [`docs/revenant-mini.md`](docs/revenant-mini.md) — the authority on *what*. Every number in it is load-bearing.
 - **Plan:** [`docs/phase.md`](docs/phase.md) — the authority on *order, gates and status*.
 

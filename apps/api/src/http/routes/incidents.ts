@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { scoreDetection, scoreNoiseWindows } from '../../app/evaluation.ts';
+import { scoreDetection, scoreNoiseWindows, scoreRca } from '../../app/evaluation.ts';
 import { getIncident, listIncidents, sliceSeries } from '../../db/queries.ts';
 import { DEFAULT_DETECTOR_CONFIG } from '../../domain/detector.ts';
 import { runner } from '../../sim/runner.ts';
@@ -66,8 +66,11 @@ incidents.get('/api/v1/incidents/:id/timeseries', async (c) => {
  * recall. The noise windows are the other half, and they are reported beside it.
  */
 incidents.get('/api/v1/evaluation', async (c) => {
-  const score = await scoreDetection();
-  const noise = await scoreNoiseWindows(runner.state().noiseWindows);
+  const [score, noise, rca] = await Promise.all([
+    scoreDetection(),
+    scoreNoiseWindows(runner.state().noiseWindows),
+    scoreRca(),
+  ]);
 
   return c.json({
     detection: {
@@ -85,7 +88,12 @@ incidents.get('/api/v1/evaluation', async (c) => {
       windows: noise.windows,
     },
     detector_config: DEFAULT_DETECTOR_CONFIG,
-    // RCA top-1 accuracy lands in P8.
-    rca: null,
+    rca: {
+      scored: rca.scored,
+      top1_correct: rca.top1Correct,
+      top3_correct: rca.top3Correct,
+      top1_accuracy: rca.top1Accuracy,
+      results: rca.results,
+    },
   });
 });

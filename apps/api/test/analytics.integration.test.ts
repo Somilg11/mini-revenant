@@ -80,7 +80,7 @@ describe('rollups are maintained incrementally and agree with a recomputation', 
     await makePayment('failed', 250_00, intl());
     await makePayment('captured', 4_000_00, { is_international: false, method: 'upi', bank: 'HDFC' });
 
-    const drift = await measureDrift({ from: WINDOW.from });
+    const drift = await measureDrift({ from: WINDOW.from, to: WINDOW.to });
     expect(drift.rows).toBe(0);
     expect(drift.attempts).toBe(0);
     expect(drift.successes).toBe(0);
@@ -99,7 +99,7 @@ describe('rollups are maintained incrementally and agree with a recomputation', 
     await project(event(id, 'payment.attempted', T(40), { gateway: 'secondary' }));
     await project(event(id, 'payment.captured', T(41)));
 
-    expect((await measureDrift({ from: WINDOW.from })).rows).toBe(0);
+    expect((await measureDrift({ from: WINDOW.from, to: WINDOW.to })).rows).toBe(0);
 
     const [row] = await sql<{ successes: number; failures: number }[]>`
       SELECT successes, failures FROM metrics_rollup
@@ -112,7 +112,7 @@ describe('rollups are maintained incrementally and agree with a recomputation', 
     await makePayment('open', 700_00, intl());
     const n = await sweepAbandoned(new Date(BASE + 120 * 60_000));
     expect(n).toBeGreaterThanOrEqual(1);
-    expect((await measureDrift({ from: WINDOW.from })).rows).toBe(0);
+    expect((await measureDrift({ from: WINDOW.from, to: WINDOW.to })).rows).toBe(0);
   });
 
   test('a hand-corrupted rollup is reported, not repaired', async () => {
@@ -121,13 +121,13 @@ describe('rollups are maintained incrementally and agree with a recomputation', 
       UPDATE metrics_rollup SET attempts = attempts + 7
       WHERE dimension = 'all' AND bucket_start = ${bucketOf(T(0))} AND merchant_id = ${MERCHANT}`;
 
-    const drift = await measureDrift({ from: WINDOW.from });
+    const drift = await measureDrift({ from: WINDOW.from, to: WINDOW.to });
     expect(drift.rows).toBeGreaterThan(0);
     expect(drift.attempts).toBe(7);
 
     // Measuring drift must not fix it — a rollup that repairs itself hides the
     // bug that caused it (§10).
-    expect((await measureDrift({ from: WINDOW.from })).attempts).toBe(7);
+    expect((await measureDrift({ from: WINDOW.from, to: WINDOW.to })).attempts).toBe(7);
   });
 });
 
@@ -225,6 +225,6 @@ describe('money never arrives as a string', () => {
       expect(typeof p.failed_amount_paise).toBe('number');
     }
 
-    expect(typeof (await measureDrift({ from: WINDOW.from })).grossAmountPaise).toBe('number');
+    expect(typeof (await measureDrift({ from: WINDOW.from, to: WINDOW.to })).grossAmountPaise).toBe('number');
   });
 });

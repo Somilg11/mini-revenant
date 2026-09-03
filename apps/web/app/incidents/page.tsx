@@ -16,6 +16,8 @@ export default async function IncidentsPage() {
   const [{ incidents }, evaluation] = await Promise.all([fetchIncidents(), fetchEvaluation()]);
   const det = evaluation?.detection;
   const noise = evaluation?.noise_windows;
+  const rca = evaluation?.rca;
+  const rcaByKind = new Map((rca?.results ?? []).map((r) => [r.kind, r]));
 
   return (
     <main style={{ maxWidth: 1180, margin: '0 auto', padding: '40px 24px 64px' }}>
@@ -29,7 +31,7 @@ export default async function IncidentsPage() {
       </header>
 
       {det && (
-        <section style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+        <section style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8 }}>
           <Tile
             label="Precision"
             value={formatPct(det.precision)}
@@ -53,6 +55,16 @@ export default async function IncidentsPage() {
             note="two unlabelled windows — firing here is wrong"
             tone={noise?.clean ? 'success' : 'danger'}
           />
+          <Tile
+            label="RCA top-1"
+            value={rca?.top1_accuracy === null || rca === null || rca === undefined ? '—' : formatPct(rca.top1_accuracy)}
+            note={
+              rca && rca.scored > 0
+                ? `${rca.top1_correct} of ${rca.scored} diagnosed incidents named the labelled tuple`
+                : 'no incident diagnosed yet'
+            }
+            tone={rca && rca.scored > 0 && rca.top1_correct === rca.scored ? 'success' : undefined}
+          />
         </section>
       )}
 
@@ -65,6 +77,7 @@ export default async function IncidentsPage() {
                 <th style={th}>Injected incident</th>
                 <th style={thR}>Payments</th>
                 <th style={th}>Found on</th>
+                <th style={th}>Diagnosed as</th>
               </tr>
             </thead>
             <tbody>
@@ -90,6 +103,20 @@ export default async function IncidentsPage() {
                         {m.missReason ?? 'not detected'}
                       </span>
                     )}
+                  </td>
+                  <td style={td}>
+                    {(() => {
+                      const r = rcaByKind.get(m.kind);
+                      if (!r) return <span style={{ color: 'var(--text-tertiary)', fontSize: 11 }}>—</span>;
+                      return (
+                        <span className="mono" style={{ fontSize: 11 }}>
+                          <span style={{ color: r.top1Correct ? 'var(--success)' : 'var(--warning)' }}>
+                            {r.top1Correct ? '✓' : '≠'}
+                          </span>{' '}
+                          <span style={{ color: 'var(--text-secondary)' }}>{r.top1}</span>
+                        </span>
+                      );
+                    })()}
                   </td>
                 </tr>
               ))}

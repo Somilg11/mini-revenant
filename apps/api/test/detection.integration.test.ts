@@ -3,6 +3,8 @@ import { sql } from '../src/db/client.ts';
 import { project } from '../src/app/projector.ts';
 import { sweep, catchUp, latestDataBucket } from '../src/app/detection.ts';
 import { DEFAULT_DETECTOR_CONFIG as CFG, requiredBuckets } from '../src/domain/detector.ts';
+import { diagnose } from '../src/app/rca.ts';
+import { getIncident } from '../src/db/queries.ts';
 import { assertNoCompetingRelay, MERCHANT, createdEvent, event, uid } from './helpers.ts';
 
 /**
@@ -14,6 +16,13 @@ const BASE = Date.parse('2029-04-01T00:00:00.000Z');
 const BUCKET = 5 * 60_000;
 const WINDOW_FROM = '2029-01-01T00:00:00.000Z';
 const CUSTOMER = 'cus_detect_p7';
+
+/**
+ * These fixtures build hundreds of payments through the real projector — three
+ * events each, one transaction apiece — which runs past Bun's 5-second default
+ * and fails as a timeout that looks like a logic error.
+ */
+const SLOW = 30_000;
 
 async function reset(): Promise<void> {
   await sql`DELETE FROM incidents WHERE opened_at >= ${WINDOW_FROM}`;
@@ -79,7 +88,7 @@ describe('the sweep opens incidents on a real degradation', () => {
       SELECT dimension, dimension_value, z_score FROM incidents WHERE opened_at >= ${WINDOW_FROM}`;
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.every((r) => r.z_score >= CFG.minZScore)).toBe(true);
-  });
+  }, SLOW);
 
   test('the five gates are persisted with their numbers', async () => {
     const now = await history(0.06, 0.6, 30);
@@ -89,7 +98,7 @@ describe('the sweep opens incidents on a real degradation', () => {
     expect(row!.gates).toHaveLength(5);
     expect(row!.gates.every((g) => g.passed)).toBe(true);
     for (const g of row!.gates) expect(g.detail.length).toBeGreaterThan(0);
-  });
+  }, SLOW);
 
   test('a second sweep does not open a duplicate — one open incident per slice', async () => {
     const now = await history(0.06, 0.6, 30);
@@ -98,7 +107,7 @@ describe('the sweep opens incidents on a real degradation', () => {
     expect(first.opened.length).toBeGreaterThan(0);
     // Suppressed by the open incident, and by `incidents_one_open` beneath it.
     expect(second.opened).toEqual([]);
-  });
+  }, SLOW);
 });
 
 describe('the sweep stays quiet on ordinary traffic', () => {
@@ -106,19 +115,19 @@ describe('the sweep stays quiet on ordinary traffic', () => {
     const now = await history(0.06, 0.07, 30);
     const result = await sweep(now);
     expect(result.opened).toEqual([]);
-  });
+  }, SLOW);
 
   test('a mild wobble — the shape of an unlabelled noise window — opens nothing', async () => {
     // 1.5× the baseline, which is what §8.4's noise windows carry. The absolute
     // and relative gates are what refuse it.
     const now = await history(0.06, 0.09, 30);
     expect((await sweep(now)).opened).toEqual([]);
-  });
+  }, SLOW);
 
   test('a thin slice does not fire however bad it looks', async () => {
     const now = await history(0.06, 0.8, 4);
     expect((await sweep(now)).opened).toEqual([]);
-  });
+  }, SLOW);
 });
 
 describe('catch-up follows the data, not the clock', () => {
@@ -133,14 +142,14 @@ describe('catch-up follows the data, not the clock', () => {
       maxBuckets: 5000,
     });
     expect(sweptTo.getTime()).toBeLessThanOrEqual(latest!.getTime());
-  });
+  }, SLOW);
 
   test('`until` bounds it further, so unsettled buckets are not judged', async () => {
     await history(0.06, 0.6, 30);
     const cap = new Date(BASE + 10 * BUCKET);
     const { sweptTo } = await catchUp(new Date(BASE), { until: cap, maxBuckets: 5000 });
     expect(sweptTo.getTime()).toBeLessThanOrEqual(cap.getTime());
-  });
+  }, SLOW);
 
   test('it steps bucket by bucket rather than jumping, so no window is skipped', async () => {
     // An evaluation window is fifteen minutes wide. A sweep that jumped from
@@ -148,5 +157,67 @@ describe('catch-up follows the data, not the clock', () => {
     await history(0.06, 0.6, 30);
     const { result } = await catchUp(new Date(BASE + 280 * BUCKET), { maxBuckets: 5000 });
     expect(result.evaluated).toBeGreaterThan(0);
-  });
+  }, SLOW);
+});
+
+describe('§7.4 — root cause runs on a real incident', () => {
+  test('it names the degraded slice and stores the evidence', async () => {
+    // A card slice collapses while UPI carries on normally.
+    // Cards on *both* banks and UPI on both, so `method=card` and any single
+    // bank are not synonyms — otherwise the two labels cover identical payments
+    // and which one is reported is arbitrary.
+    const total = requiredBuckets(CFG);
+    const start = total - 8 - CFG.baselineGapBuckets - CFG.evaluationBuckets;
+    const card = (bank: string) => ({ method: 'card', bank, is_international: false, card_network: 'visa' });
+    const upi = (bank: string) => ({ method: 'upi', bank, is_international: false });
+
+    // Eight buckets × four slices × eight payments = 256 baseline attempts,
+    // comfortably over the detector's 200 floor and a third fewer projections.
+    for (let i = 0; i < 8; i += 1) {
+      await bucket(start + i, 8, 1, upi('HDFC'));
+      await bucket(start + i, 8, 1, upi('ICICI'));
+      await bucket(start + i, 8, 1, card('HDFC'));
+      await bucket(start + i, 8, 1, card('ICICI'));
+    }
+    for (let i = 0; i < CFG.evaluationBuckets; i += 1) {
+      const b = total - CFG.evaluationBuckets + i;
+      await bucket(b, 10, 1, upi('HDFC'));
+      await bucket(b, 10, 1, upi('ICICI'));
+      await bucket(b, 10, 8, card('HDFC'));
+      await bucket(b, 10, 8, card('ICICI'));
+    }
+
+    const now = new Date(BASE + total * BUCKET);
+    const result = await sweep(now);
+    expect(result.opened.length).toBeGreaterThan(0);
+
+    const incident = (await getIncident(result.opened[0]!))!;
+    const rca = await diagnose(incident);
+
+    expect(rca.hypotheses.length).toBeGreaterThan(0);
+    const top = rca.hypotheses[0]!;
+
+    // The degraded slice, not the busiest one — UPI carries equal traffic and
+    // is untouched, and the degradation spans both banks so only `method` can
+    // name it.
+    expect(top.tuple.method).toBe('card');
+
+    // Evidence, not just a verdict.
+    expect(top.excess).toBeGreaterThan(0);
+    expect(top.excessShare).toBeGreaterThan(0.5);
+    expect(top.observedRate).toBeGreaterThan(top.expectedRate);
+    expect(top.attempts).toBeGreaterThan(0);
+
+    // The quoted baseline is the shrunk rate — the same arithmetic the share
+    // came from (§7.4), not the slice's raw history.
+    const shrunk =
+      (top.baselineFailures + 30 * rca.pooledRate) / (top.baselineAttempts + 30);
+    expect(top.expectedRate).toBeCloseTo(shrunk, 6);
+
+    // And it is persisted on the incident for the UI to read.
+    const stored = (await getIncident(incident.id))!;
+    const rootCause = stored.root_cause as { hypotheses: unknown[] } | null;
+    expect(rootCause).not.toBeNull();
+    expect(rootCause!.hypotheses.length).toBeGreaterThan(0);
+  }, SLOW);
 });
