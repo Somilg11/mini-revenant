@@ -6,6 +6,7 @@ import { ABANDONMENT_IDLE_MINUTES } from '../domain/payment-state.ts';
 import { sweepAbandoned } from '../app/abandonment.ts';
 import { catchUp as detectionCatchUp } from '../app/detection.ts';
 import { diagnosePending } from '../app/rca.ts';
+import { openCases } from '../app/recovery.ts';
 import { listMerchants } from '../db/queries.ts';
 import { log } from '../lib/logger.ts';
 import { SimClock, type ClockState } from './clock.ts';
@@ -355,6 +356,9 @@ class Runner {
         // Diagnose immediately: RCA reads the incident's own window, and the
         // sooner it runs the fewer rows it has to sift.
         if (result.opened.length > 0) await diagnosePending();
+        // Cases follow detection: a failure inside a live incident is scored
+        // with `incidentActive` set, which lifts its retry odds (§7.5).
+        await openCases(new Date(this.abandonmentSettledMs));
       } catch (err) {
         // Detection failing must not stop the replay: the pipeline is the
         // thing under test, and a stalled clock hides that it still works.
@@ -433,6 +437,12 @@ class Runner {
     });
     this.lastDetectionMs = endMs;
     await diagnosePending(500);
+    // Keep opening until the worklist is empty: the last simulated minutes
+    // produce failures too, and a case that never opens is revenue never priced.
+    for (let i = 0; i < 200; i += 1) {
+      const r = await openCases(new Date(endMs), 500);
+      if (r.opened === 0 && r.considered === 0) break;
+    }
     log.info('simulator finalised', {
       abandoned,
       incidentsOpened: result.opened.length,

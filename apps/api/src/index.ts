@@ -43,10 +43,11 @@ await startListener();
 
 const app = createApp();
 
-log.info('api listening', { port: config.PORT });
+log.info('api listening', { host: config.HOST, port: config.PORT });
 
 export default {
   port: config.PORT,
+  hostname: config.HOST,
   fetch: app.fetch,
   // Long enough for an SSE client (P6) to sit idle between simulator ticks.
   idleTimeout: 120,

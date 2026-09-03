@@ -5,6 +5,7 @@ import { config } from '../config.ts';
 import { AppError, isConnectionError, publicMessage } from '../lib/errors.ts';
 import { log } from '../lib/logger.ts';
 import { health } from './routes/health.ts';
+import { cases } from './routes/cases.ts';
 import { incidents } from './routes/incidents.ts';
 import { metrics } from './routes/metrics.ts';
 import { sim } from './routes/sim.ts';
@@ -42,7 +43,12 @@ export function createApp(): Hono<AppEnv> {
    * without guessing from timestamps.
    */
   app.use('*', async (c, next) => {
-    const requestId = c.req.header('X-Request-Id') ?? randomUUID();
+    // Client-supplied ids are echoed into every log line for the request. Cap
+    // the length and the alphabet so a hostile header cannot bloat or shape
+    // the log.
+    const supplied = c.req.header('X-Request-Id');
+    const requestId =
+      supplied && /^[A-Za-z0-9._-]{1,64}$/.test(supplied) ? supplied : randomUUID();
     c.set('requestId', requestId);
     c.header('X-Request-Id', requestId);
 
@@ -69,6 +75,7 @@ export function createApp(): Hono<AppEnv> {
   app.route('/', webhooks);
   app.route('/', metrics);
   app.route('/', incidents);
+  app.route('/', cases);
   app.route('/', sim);
   app.route('/', stream);
 

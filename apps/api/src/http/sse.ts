@@ -18,9 +18,23 @@ export const stream = new Hono<AppEnv>();
  * its own, which matters when a demo laptop sleeps mid-run.
  */
 const HEARTBEAT_MS = 15_000;
+/**
+ * Each stream holds a subscriber, a timer and a connection for its lifetime.
+ * Without a ceiling, a page left open in a hundred tabs — or one script in a
+ * loop — turns the API into a subscriber registry.
+ */
+const MAX_STREAMS = 32;
 
 stream.get('/api/v1/stream', (c) => {
   const requestId = c.get('requestId');
+
+  if (subscriberCount() >= MAX_STREAMS) {
+    log.warn('sse stream refused: too many subscribers', { requestId, limit: MAX_STREAMS });
+    return c.json(
+      { error: { code: 'TOO_MANY_STREAMS', message: `at most ${MAX_STREAMS} concurrent streams` } },
+      503,
+    );
+  }
 
   const body = new ReadableStream<Uint8Array>({
     start(controller) {

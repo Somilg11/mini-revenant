@@ -7,6 +7,10 @@ import { z } from 'zod';
  */
 const Schema = z.object({
   PORT: z.coerce.number().int().positive().default(8090),
+  // Loopback by default. `POST /api/v1/sim/reset` truncates the database and
+  // nothing on this API is authenticated (§3), so listening on every interface
+  // would let anyone on the network wipe it. Set 0.0.0.0 deliberately.
+  HOST: z.string().min(1).default('127.0.0.1'),
   DATABASE_URL: z.string().url(),
   PGPOOL_MAX: z.coerce.number().int().positive().default(10),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),

@@ -542,3 +542,251 @@ export async function rcaObservations(
     WHERE p.created_at >= ${from} AND p.created_at < ${to}
   `;
 }
+
+// ── Recovery cases (§7.5) ────────────────────────────────────────────────────
+
+export interface RecoveryCandidate {
+  id: string;
+  merchant_id: string;
+  customer_id: string;
+  amount_paise: number;
+  method: string;
+  bank: string | null;
+  card_network: string | null;
+  failure_code: string | null;
+  abandoned: boolean;
+  attempt_index: number;
+  created_at: string;
+  last_event_at: string;
+  is_international: boolean;
+  customer_prior_attempts: number;
+  customer_prior_successes: number;
+  merchant_prior_attempts: number;
+  merchant_prior_successes: number;
+  seconds_since_last_attempt: number;
+  incident_active: boolean;
+  opted_out: boolean;
+}
+
+/**
+ * Unresolved failures with no live case, and everything needed to score them.
+ *
+ * The features are computed in one pass rather than a query per payment: at
+ * 6,770 unresolved payments a round trip each would take minutes, and the
+ * recovery worklist is meant to keep up with a live replay.
+ *
+ * `customer_prior_*` counts only payments created **before** this one — a
+ * feature that could see the future would make every training metric look
+ * excellent and the model useless.
+ */
+export async function recoveryCandidates(
+  now: string,
+  limit: number,
+  db: Sql = sql,
+): Promise<RecoveryCandidate[]> {
+  return db<RecoveryCandidate[]>`
+    WITH candidate AS (
+      SELECT p.*
+      FROM payments p
+      WHERE (p.state = 'FAILED' OR (p.state = 'ATTEMPTED' AND p.abandoned))
+        AND p.created_at < ${now}
+        AND NOT EXISTS (
+          SELECT 1 FROM recovery_cases c
+          WHERE c.payment_id = p.id AND c.status IN ('OPEN', 'ACTING')
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM recovery_cases c WHERE c.payment_id = p.id
+        )
+      ORDER BY p.created_at
+      LIMIT ${limit}
+    )
+    SELECT
+      c.id, c.merchant_id, c.customer_id, c.amount_paise,
+      c.method::text AS method, c.bank, c.card_network, c.failure_code,
+      c.abandoned, c.attempt_index, c.created_at::text, c.last_event_at::text,
+      c.is_international,
+      COALESCE(cust.attempts, 0)::int  AS customer_prior_attempts,
+      COALESCE(cust.successes, 0)::int AS customer_prior_successes,
+      COALESCE(merch.attempts, 0)::int  AS merchant_prior_attempts,
+      COALESCE(merch.successes, 0)::int AS merchant_prior_successes,
+      COALESCE(
+        EXTRACT(EPOCH FROM (c.created_at - prev.last_created))::int,
+        -1
+      ) AS seconds_since_last_attempt,
+      EXISTS (
+        -- Only incidents the DETECTOR opened, never the answer key (§7.5).
+        -- "Active" means active *when the payment failed*: an incident that has
+        -- since resolved still counts, or a case opened late (at the end of a
+        -- replay) would be scored as if the outage had never happened.
+        SELECT 1 FROM incidents i
+        WHERE i.opened_at <= c.created_at
+          AND (i.status = 'OPEN' OR i.resolved_at >= c.created_at)
+          AND (
+            (i.dimension = 'all')
+            OR (i.dimension = 'method' AND i.dimension_value = c.method::text)
+            OR (i.dimension = 'bank' AND i.dimension_value = COALESCE(c.bank, 'none'))
+            OR (i.dimension = 'is_international'
+                AND i.dimension_value = CASE WHEN c.is_international THEN 'true' ELSE 'false' END)
+            OR (i.dimension = 'card_network' AND i.dimension_value = COALESCE(c.card_network, 'none'))
+          )
+      ) AS incident_active,
+      cu.opted_out
+    FROM candidate c
+    JOIN customers cu ON cu.id = c.customer_id
+    LEFT JOIN LATERAL (
+      SELECT count(*)::int AS attempts,
+             count(*) FILTER (WHERE p2.state = 'CAPTURED')::int AS successes
+      FROM payments p2
+      WHERE p2.customer_id = c.customer_id AND p2.created_at < c.created_at
+    ) cust ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT count(*)::int AS attempts,
+             count(*) FILTER (WHERE p3.state = 'CAPTURED')::int AS successes
+      FROM payments p3
+      WHERE p3.merchant_id = c.merchant_id AND p3.created_at < c.created_at
+    ) merch ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT max(p4.created_at) AS last_created
+      FROM payments p4
+      WHERE p4.customer_id = c.customer_id AND p4.created_at < c.created_at
+    ) prev ON TRUE
+  `;
+}
+
+export interface CaseRow {
+  id: string;
+  payment_id: string;
+  merchant_id: string;
+  incident_id: string | null;
+  status: string;
+  recovery_probability: number | null;
+  probability_source: string | null;
+  chosen_strategy: string | null;
+  strategy_options: unknown;
+  expected_value_paise: number | null;
+  opened_at: string;
+  closed_at: string | null;
+}
+
+export interface CaseListRow extends CaseRow {
+  amount_paise: number;
+  method: string;
+  failure_code: string | null;
+  is_international: boolean;
+  card_network: string | null;
+  payment_state: string;
+  abandoned: boolean;
+}
+
+export async function listCases(
+  status: string | null,
+  limit: number,
+  db: Sql = sql,
+): Promise<CaseListRow[]> {
+  return db<CaseListRow[]>`
+    SELECT c.*, p.amount_paise, p.method::text AS method, p.failure_code,
+           p.is_international, p.card_network, p.state::text AS payment_state, p.abandoned
+    FROM recovery_cases c
+    JOIN payments p ON p.id = c.payment_id
+    ${status ? db`WHERE c.status = ${status}` : db``}
+    ORDER BY c.opened_at DESC
+    LIMIT ${limit}`;
+}
+
+export async function getCase(id: string, db: Sql = sql): Promise<CaseListRow | null> {
+  const [row] = await db<CaseListRow[]>`
+    SELECT c.*, p.amount_paise, p.method::text AS method, p.failure_code,
+           p.is_international, p.card_network, p.state::text AS payment_state, p.abandoned
+    FROM recovery_cases c
+    JOIN payments p ON p.id = c.payment_id
+    WHERE c.id = ${id}`;
+  return row ?? null;
+}
+
+export interface CaseStats {
+  open: number;
+  total: number;
+  model: number;
+  baseline: number;
+  expected_recoverable_paise: number;
+}
+
+export async function caseStats(db: Sql = sql): Promise<CaseStats> {
+  const [row] = await db<CaseStats[]>`
+    SELECT
+      count(*) FILTER (WHERE c.status = 'OPEN')::int AS open,
+      count(*)::int AS total,
+      count(*) FILTER (WHERE c.probability_source = 'model')::int    AS model,
+      count(*) FILTER (WHERE c.probability_source = 'baseline')::int AS baseline,
+      COALESCE(sum(round(c.recovery_probability * p.amount_paise))
+        FILTER (WHERE c.status = 'OPEN'), 0)::bigint AS expected_recoverable_paise
+    FROM recovery_cases c
+    JOIN payments p ON p.id = c.payment_id`;
+  return row ?? { open: 0, total: 0, model: 0, baseline: 0, expected_recoverable_paise: 0 };
+}
+
+/** The active trained model, if one has been activated (P10). */
+export async function activeModelRow(
+  db: Sql = sql,
+): Promise<{ id: string; coefficients: unknown; calibration: unknown } | null> {
+  const [row] = await db<{ id: string; coefficients: unknown; calibration: unknown }[]>`
+    SELECT id, coefficients, calibration FROM model_versions WHERE is_active LIMIT 1`;
+  return row ?? null;
+}
+
+/**
+ * The scoring features for one existing payment.
+ *
+ * Shares its shape with `recoveryCandidates` so the odds shown on a case detail
+ * page are computed from the same inputs the case was opened with, rather than
+ * from a reconstruction that might drift from it.
+ */
+export async function candidateForPayment(
+  paymentId: string,
+  db: Sql = sql,
+): Promise<RecoveryCandidate | null> {
+  const [row] = await db<RecoveryCandidate[]>`
+    SELECT
+      p.id, p.merchant_id, p.customer_id, p.amount_paise,
+      p.method::text AS method, p.bank, p.card_network, p.failure_code,
+      p.abandoned, p.attempt_index, p.created_at::text, p.last_event_at::text,
+      p.is_international,
+      COALESCE(cust.attempts, 0)::int  AS customer_prior_attempts,
+      COALESCE(cust.successes, 0)::int AS customer_prior_successes,
+      COALESCE(merch.attempts, 0)::int  AS merchant_prior_attempts,
+      COALESCE(merch.successes, 0)::int AS merchant_prior_successes,
+      COALESCE(EXTRACT(EPOCH FROM (p.created_at - prev.last_created))::int, -1)
+        AS seconds_since_last_attempt,
+      EXISTS (
+        SELECT 1 FROM incidents i
+        WHERE i.opened_at <= p.created_at
+          AND (i.status = 'OPEN' OR i.resolved_at >= p.created_at)
+          AND (
+            (i.dimension = 'all')
+            OR (i.dimension = 'method' AND i.dimension_value = p.method::text)
+            OR (i.dimension = 'bank' AND i.dimension_value = COALESCE(p.bank, 'none'))
+            OR (i.dimension = 'is_international'
+                AND i.dimension_value = CASE WHEN p.is_international THEN 'true' ELSE 'false' END)
+            OR (i.dimension = 'card_network' AND i.dimension_value = COALESCE(p.card_network, 'none'))
+          )
+      ) AS incident_active,
+      cu.opted_out
+    FROM payments p
+    JOIN customers cu ON cu.id = p.customer_id
+    LEFT JOIN LATERAL (
+      SELECT count(*)::int AS attempts,
+             count(*) FILTER (WHERE p2.state = 'CAPTURED')::int AS successes
+      FROM payments p2 WHERE p2.customer_id = p.customer_id AND p2.created_at < p.created_at
+    ) cust ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT count(*)::int AS attempts,
+             count(*) FILTER (WHERE p3.state = 'CAPTURED')::int AS successes
+      FROM payments p3 WHERE p3.merchant_id = p.merchant_id AND p3.created_at < p.created_at
+    ) merch ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT max(p4.created_at) AS last_created
+      FROM payments p4 WHERE p4.customer_id = p.customer_id AND p4.created_at < p.created_at
+    ) prev ON TRUE
+    WHERE p.id = ${paymentId}`;
+  return row ?? null;
+}

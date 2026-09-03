@@ -13,7 +13,7 @@ DETECT → DIAGNOSE → QUANTIFY → DECIDE → GATE → ACT → VERIFY → LEAR
 It does not retry payments. It decides which failures are worth money, proves
 why, and refuses to act when acting loses.
 
-Today it detects degradations per dimension and diagnoses them: an
+Today it detects degradations per dimension, diagnoses them, and prices every unresolved failure: an
 eight-hour collapse in international card acceptance moves the overall failure
 rate about seven points — a wobble any dashboard would ignore — and is reported
 as `is_international=true`, carrying 100% of the excess failures.
@@ -228,6 +228,7 @@ payloads and PII are never logged.
 | Variable | Default | Notes |
 |---|---|---|
 | `PORT` | `8090` | API |
+| `HOST` | `127.0.0.1` | Loopback by default — the API is unauthenticated and `sim/reset` truncates the database. Set `0.0.0.0` on purpose. |
 | `WEB_PORT` | `3000` | Dashboard |
 | `POSTGRES_HOST_PORT` | `5434` | Host port for the container |
 | `DATABASE_URL` | `…@localhost:5434/revenant_mini` | Keep in sync with the above |
@@ -325,9 +326,10 @@ Deliberate, and scoped by §3 of the spec — but real, so they are stated rathe
 than left to be discovered.
 
 - **The API is unauthenticated.** Anyone who can reach `:8090` can read every
-  metric, and `?merchant_id=` returns any tenant's data. §3 puts auth and
-  multi-tenancy enforcement out of scope for the MVP; the merchant switcher is
-  hardcoded. Do not expose this port.
+  metric, `?merchant_id=` returns any tenant's data, and `POST /api/v1/sim/reset`
+  truncates the database. §3 puts auth and multi-tenancy enforcement out of
+  scope for the MVP. For that reason the API **binds to loopback by default**;
+  `HOST=0.0.0.0` is a deliberate choice, not a default.
 - **`processed_events` and `outbox` are never pruned.** Correct, but unbounded:
   `processed_events` reaches ~292k rows / 37 MB after one seed and grows with
   every event.

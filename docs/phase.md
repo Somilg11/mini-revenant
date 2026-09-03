@@ -129,6 +129,44 @@ call site fails safe · CORS is an allowlist, not an echo.
 
 ---
 
+## 0.3 Second audit (after P9)
+
+End-to-end pass over P0–P9. Five fixed, none critical this time — the first
+audit's structural fixes held.
+
+| # | Finding | Severity | Fix |
+|---|---|---|---|
+| 1 | **The API listened on every interface**, and `POST /api/v1/sim/reset` truncates the database with no authentication (§3 puts auth out of scope). Anyone on the network could wipe it. | High | Binds to `127.0.0.1` by default; `HOST=0.0.0.0` must be set deliberately. Verified: LAN address refused, loopback served. |
+| 2 | **Recovery sweep doubled the replay.** No index on `payments.customer_id`; every candidate scanned 75,000 rows. | Medium | Migration 005. 5.7× faster per candidate. |
+| 3 | **`incident_active` lost history** — see P9 above. | Medium | Includes incidents resolved after the payment's creation. |
+| 4 | **Client-supplied `X-Request-Id` was echoed unbounded** into every log line for the request. A 1 MB header would bloat the log; a crafted one could shape it. | Low | Accepted only if it matches `^[A-Za-z0-9._-]{1,64}$`; otherwise a UUID is issued. Verified with a 5,000-character header. |
+| 5 | **No ceiling on SSE streams.** Each holds a subscriber, a timer and a connection for its lifetime; a page in a hundred tabs turns the API into a subscriber registry. | Low | 32 concurrent; the 33rd gets a 503. Verified. |
+
+**Probed and sound:** every new endpoint (`/cases`, `/incidents`, `/sim/*`)
+against injection in path and query, out-of-range and non-numeric bounds, path
+traversal, and error-body leakage — all 400/404, all capped, no stack or driver
+text in any response. The worklist's customer priors count only payments
+created *before* the candidate, asserted in a test: a feature that could see
+the future would make every training metric excellent and the model useless.
+
+**Still accepted, unchanged from §0.2:** no authentication and no tenant
+isolation on reads; `processed_events` and `outbox` never pruned; no rate limit
+on the webhook.
+
+**One unreproduced failure, recorded rather than hidden:** the first
+integration run after the API was killed mid-probe (with 34 SSE streams open)
+failed two analytics assertions; the next six runs were clean and the failure
+could not be reproduced. It is consistent with the abrupt kill, not with the
+tests, but it is not proven. If it recurs, capture `rollup drift detected` from
+the log before anything else.
+
+**One test-suite caveat:** the recovery tests drain the *global* worklist,
+because that is what the real function does. Run against a database holding a
+half-built seed and they will open cases for it too — harmless (a replay reset
+truncates everything) but worth knowing when a case shows an odd `opened_at`.
+
+---
+
 ## Phase status legend
 
 `TODO` · `WIP` · `DONE` · `CUT` (see §16 cut order)
@@ -650,19 +688,49 @@ once.** Both produced failures that read as logic errors and were not:
 
 ## P9 — Recovery cases and the rule baseline
 
-**Status:** TODO
+**Status:** DONE — 226 unit + 64 integration
 
-- `domain/recovery-model.ts` — the `Features` vector and the shared encoding
-  pipeline used by **both** training and serving
-- The measured family-rate fallback table of §7.5, including the
-  `alternate_gateway` column that only `CROSS_BORDER` codes carry
-- Adjustments: `× 0.62` per additional attempt, `× 1.25` on retry during an
-  active incident, clamp `[0.01, 0.95]`
-- `app/recovery.ts` — opens cases (blocked from duplicating by `cases_one_live`)
+- `domain/recovery-model.ts` — the `Features` vector, **one** `encode()` used by
+  both training and serving, the §7.5 baseline table with its adjustments, and
+  `predict()` which falls back to the baseline and says so
+- `app/recovery.ts` — opens one case per unresolved failure, priced by whichever
+  scorer is active; `cases_one_live` does the deduplication
+- `db/queries.ts` — the worklist with customer and merchant priors computed
+  **only from earlier payments**
+- `/api/v1/cases`, `/api/v1/cases/:id` (with the features and per-strategy odds)
+- Web: `/recovery` list and `/recovery/[id]` detail, both carrying the
+  `model`/`baseline` `SourceBadge`
+- Migration 005: `payments (customer_id, created_at)`
 
-**Gate:** cases open with `probability_source: 'baseline'` and the UI shows that
-badge · a second live case for the same payment is rejected by the constraint,
-not by an `if`.
+**Gate:** cases open with `probability_source: 'baseline'` and the UI shows the
+badge · a second live case for the same payment is **refused by the constraint,
+not by an `if`** · `recoverable_revenue` moved from `null` to **₹1.39Cr,
+`recoverable_estimated: true`** · 6,839 unresolved payments, 6,839 cases · the
+stored probability equals what the domain model computes from the same features.
+
+**The case-level probability is the best any single intervention could
+achieve** — the max over the four strategy odds. That matches the ground-truth
+definition of `recoverable` (the disjunction of the four counterfactuals, §8.3),
+so the baseline and the trained model predict the same quantity and their
+calibration curves are comparable.
+
+**Two things decided here that the spec leaves open:**
+
+- **Opted-out customers get a case.** A case is a *price* on the failure, not a
+  decision to touch the customer; policy rule 3 (P12) is what refuses contact.
+  The flag travels with the candidate so the gate can see it. 161 such cases in
+  the seeded run — and they are counted in `recoverable_revenue`, which is an
+  expectation over open cases and not a forecast of what will be acted on.
+- **`incident_active` means active *when the payment failed*.** The first
+  version checked `status = 'OPEN'` at query time, so a case opened late — at
+  the end of a replay, after the incident had resolved — was scored as if the
+  outage had never happened. It now includes incidents resolved after the
+  payment's creation.
+
+**Performance:** the worklist computes each candidate's history with correlated
+subqueries on `payments`, and there was no index on `customer_id`. Every
+candidate scanned the table and the sweep doubled the replay time (300 s →
+560 s). With the index: **8.6 ms → 1.5 ms per candidate**.
 
 ---
 

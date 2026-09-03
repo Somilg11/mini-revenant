@@ -312,3 +312,60 @@ export interface IncidentSeries {
 
 export const fetchIncidentSeries = (id: string) =>
   api<IncidentSeries>(`/api/v1/incidents/${id}/timeseries`).catch((): IncidentSeries | null => null);
+
+// ── Recovery cases (§11.2) ───────────────────────────────────────────────────
+
+export interface RecoveryCase {
+  id: string;
+  payment_id: string;
+  merchant_id: string;
+  incident_id: string | null;
+  status: 'OPEN' | 'ACTING' | 'RECOVERED' | 'LOST' | 'ABANDONED_BY_POLICY';
+  recovery_probability: number | null;
+  probability_source: 'model' | 'baseline' | null;
+  chosen_strategy: string | null;
+  strategy_options: unknown;
+  expected_value_paise: number | null;
+  opened_at: string;
+  closed_at: string | null;
+  amount_paise: number;
+  method: string;
+  failure_code: string | null;
+  is_international: boolean;
+  card_network: string | null;
+  payment_state: string;
+  abandoned: boolean;
+}
+
+export interface CaseList {
+  cases: RecoveryCase[];
+  stats: {
+    open: number;
+    total: number;
+    expected_recoverable_paise: number;
+    probability_source_mix: { model: number; baseline: number };
+  };
+}
+
+export interface StrategyOdds {
+  retry: number;
+  payment_link: number;
+  alternate_method: number;
+  alternate_gateway: number;
+}
+
+export interface CaseDetail {
+  case: RecoveryCase;
+  features: Record<string, unknown> | null;
+  odds: StrategyOdds | null;
+}
+
+export const fetchCases = (status?: string, limit = 100) =>
+  api<CaseList>(`/api/v1/cases?limit=${limit}${status ? `&status=${status}` : ''}`).catch(
+    (): CaseList => ({
+      cases: [],
+      stats: { open: 0, total: 0, expected_recoverable_paise: 0, probability_source_mix: { model: 0, baseline: 0 } },
+    }),
+  );
+
+export const fetchCase = (id: string) => api<CaseDetail>(`/api/v1/cases/${id}`);
