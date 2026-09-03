@@ -852,7 +852,7 @@ ever matters.
 
 ## P12 — Policy engine
 
-**Status:** TODO
+**Status:** DONE — 26 unit tests, `bun run check` green
 
 **Build this before P15. The gate must exist before anything proposes an action,
 or "the LLM cannot act on its own" is a claim rather than a property.**
@@ -860,16 +860,48 @@ or "the LLM cannot act on its own" is a claim rather than a property.**
 - `domain/policy.ts` — the twelve rules of §7.7, evaluated **in order, all of
   them, always**; never short-circuit, collect every reason
 - Precedence: any DENY wins, else any REQUIRE_APPROVAL, else ALLOW
-- `inputHash` = SHA-256 of the canonicalised input JSON
+- `inputHash` = SHA-256 of the canonicalised input JSON (keys sorted at every
+  depth); the full input is stored beside the hash in `reasons`, so any verdict
+  is recomputable from the row
 - The `PolicyApprovedAction` brand — `unique symbol`, constructor not exported;
-  `approve()` returns `null` unless the verdict is ALLOW
-- Every decision persisted, **ALLOWs included**
-- `/policy` page: the twelve rules, the version, the append-only log, and the
-  type snippet itself
+  `approve()` returns `null` unless the verdict is ALLOW, or a REQUIRE_APPROVAL
+  a human has resolved. A DENY yields nothing by any path, and an approval does
+  not carry over to a different input (the hash must match)
+- `app/policy.ts` — `gateOpenCases()` runs in the replay tick after case
+  opening and in finalisation; every decision persisted, **ALLOWs included**;
+  a DENY closes the case `ABANDONED_BY_POLICY`; `policy.decided` on the stream
+- `POST /cases/:id/approve` re-evaluates against **current** state, not the
+  state at the original verdict; a DENY at re-evaluation still denies (a human
+  signs for large money, not over a kill switch); a second approve of the same
+  request is refused. `POST /cases/:id/reject` closes the case
+- `POST /merchants/:id/pause` / `resume` — the kill switch. Rule 1 reads
+  `is_paused`; a switch nobody can flip is not a switch
+- `/policy` page: the twelve rules, the version, counts, the append-only log,
+  and the type snippet itself. Case page: `PolicyRuleList` (failed rules first,
+  then the passed ones, with the input hash) and `ApprovalBar`
 
-**Gate:** twelve rules evaluated with all reasons stored ·
-**deleting the brand makes the build fail** — assert it (§14) · a DENY renders
-with its full reason list, not the first objection.
+**Gate, on the 6,512 real proposals at the end of the replay:** 6,425 ALLOW,
+87 REQUIRE_APPROVAL (all rule 11, amounts above ₹25,000), 0 DENY — and that
+zero is honest: every failed payment in the dataset is on `attempt_index` 1,
+opted-out customers and `TERMINAL` families are already `do_nothing` upstream,
+and rules 6–9 need executed actions, which arrive in P13. A DENY is
+demonstrated by pausing a merchant and approving a pending case: **DENY with
+all twelve reasons stored, rules 1 and 11 failed**, the case closed by policy.
+`policy.test.ts` asserts the brand cannot be forged from a plain object via
+`@ts-expect-error` — **delete the brand and `tsc` fails the build** (§14).
+
+**Two things found by the gate, both fixed:**
+1. `declare const approved: unique symbol` is a *type*, not a value —
+   `approve()` threw `ReferenceError` at runtime. It is a real
+   `const approved: unique symbol = Symbol(…)`, still not exported.
+2. Several decisions on one case share a simulated `decided_at` (the clock is
+   frozen while a human clicks), so random ids made "latest decision" a coin
+   toss. Decision ids carry wall-clock order and the log sorts by
+   `(decided_at, id)`.
+
+**Watch for in P13:** `merchantActivity()` reads `recovery_actions.created_at`
+for rules 6–9. The executor must stamp it with **simulated** time, or budgets
+are spent against the wrong clock.
 
 ---
 

@@ -7,12 +7,14 @@ import {
   breakdown,
   dataWindow,
   listMerchants,
+  setMerchantPaused,
   probabilitySourceMix,
   recoverableRevenue,
   summaryRow,
   timeseries,
   type Window,
 } from '../../db/queries.ts';
+import { NotFoundError } from '../../lib/errors.ts';
 import { rate } from '../../domain/money.ts';
 import { ValidationError } from '../../lib/errors.ts';
 import type { AppEnv } from '../app.ts';
@@ -57,6 +59,18 @@ async function resolveWindow(raw: unknown): Promise<Window | null> {
 }
 
 metrics.get('/api/v1/merchants', async (c) => c.json({ merchants: await listMerchants() }));
+
+/**
+ * The kill switch. A paused merchant gets no actions: policy rule 1 denies
+ * every proposal, approvals included, until it is resumed.
+ */
+for (const [verb, paused] of [['pause', true], ['resume', false]] as const) {
+  metrics.post(`/api/v1/merchants/:id/${verb}`, async (c) => {
+    const row = await setMerchantPaused(c.req.param('id'), paused);
+    if (!row) throw new NotFoundError('merchant', c.req.param('id'));
+    return c.json({ merchant: row });
+  });
+}
 
 /**
  * §10 summary. Every figure carries the window it was computed over **and the

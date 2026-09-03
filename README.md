@@ -13,7 +13,7 @@ DETECT → DIAGNOSE → QUANTIFY → DECIDE → GATE → ACT → VERIFY → LEAR
 It does not retry payments. It decides which failures are worth money, proves
 why, and refuses to act when acting loses.
 
-Today it detects degradations per dimension, diagnoses them, prices every unresolved failure with a trained, calibrated model that falls back to a measured baseline when unplugged, and chooses an intervention by expected value — with `do_nothing` on every ballot: an
+Today it detects degradations per dimension, diagnoses them, prices every unresolved failure with a trained, calibrated model that falls back to a measured baseline when unplugged, chooses an intervention by expected value — with `do_nothing` on every ballot — and passes every proposal through a twelve-rule policy gate whose every decision, ALLOWs included, is stored with the hash of its inputs: an
 eight-hour collapse in international card acceptance moves the overall failure
 rate about seven points — a wobble any dashboard would ignore — and is reported
 as `is_international=true`, carrying 100% of the excess failures.

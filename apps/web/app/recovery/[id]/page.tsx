@@ -4,6 +4,8 @@ import { fetchCase } from '@/lib/api';
 import { formatInrCompact, formatPct, exactPaise } from '@/lib/format';
 import { SourceBadge } from '@/components/SourceBadge';
 import { StrategyComparison } from '@/components/StrategyComparison';
+import { PolicyRuleList } from '@/components/PolicyRuleList';
+import { ApprovalBar } from '@/components/ApprovalBar';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,7 +30,9 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
   } catch {
     notFound();
   }
-  const { case: c, odds, features, decision } = detail;
+  const { case: c, odds, features, decision, policy } = detail;
+  const latest = policy.at(-1) ?? null;
+  const awaiting = latest?.verdict === 'REQUIRE_APPROVAL' && c.status === 'OPEN';
   const code = c.failure_code ?? (c.abandoned ? 'CHECKOUT_ABANDONED' : '—');
   const ev = c.recovery_probability === null ? null : Math.round(c.recovery_probability * c.amount_paise);
 
@@ -44,6 +48,8 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
           case <span className="mono">{c.id}</span> · opened <span className="mono">{c.opened_at.replace('T', ' ').slice(0, 19)}</span> UTC
         </div>
       </header>
+
+      {awaiting && <ApprovalBar caseId={c.id} amount={formatInrCompact(c.amount_paise)} />}
 
       <section style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
         <Tile label="Amount" value={formatInrCompact(c.amount_paise)} note={`${c.method}${c.is_international ? ' · international' : ''}${c.card_network ? ` · ${c.card_network}` : ''}`} titlePaise={c.amount_paise} />
@@ -64,6 +70,23 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
       {decision && (
         <section style={{ marginTop: 8 }}>
           <StrategyComparison options={decision.options} chosen={decision.chosen} multiplier={decision.customer_multiplier} />
+        </section>
+      )}
+
+      {latest && (
+        <section className="card" style={{ marginTop: 8 }}>
+          <div className="label">Policy gate</div>
+          <div style={{ marginTop: 8 }}>
+            {latest.reasons.rules?.length ? (
+              <PolicyRuleList rules={latest.reasons.rules} verdict={latest.verdict} version={latest.policy_version} inputHash={latest.input_hash} />
+            ) : (
+              <div style={{ fontSize: 12, color: 'var(--danger)' }}>
+                <span className="mono" style={{ fontSize: 15, fontWeight: 510 }}>{latest.verdict}</span>
+                <span style={{ marginLeft: 10, color: 'var(--text-tertiary)' }}>rejected by a human — no rules evaluated</span>
+              </div>
+            )}
+          </div>
+          {policy.length > 1 && <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 8 }}>{policy.length} decisions on this case — every one persisted.</div>}
         </section>
       )}
 

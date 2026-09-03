@@ -7,6 +7,7 @@ import { sweepAbandoned } from '../app/abandonment.ts';
 import { catchUp as detectionCatchUp } from '../app/detection.ts';
 import { diagnosePending } from '../app/rca.ts';
 import { openCases } from '../app/recovery.ts';
+import { gateOpenCases } from '../app/policy.ts';
 import { listMerchants } from '../db/queries.ts';
 import { log } from '../lib/logger.ts';
 import { SimClock, type ClockState } from './clock.ts';
@@ -359,6 +360,8 @@ class Runner {
         // Cases follow detection: a failure inside a live incident is scored
         // with `incidentActive` set, which lifts its retry odds (§7.5).
         await openCases(new Date(this.abandonmentSettledMs));
+        // Every proposal passes the gate before anything moves money (§9).
+        await gateOpenCases(new Date(this.abandonmentSettledMs));
       } catch (err) {
         // Detection failing must not stop the replay: the pipeline is the
         // thing under test, and a stalled clock hides that it still works.
@@ -442,6 +445,10 @@ class Runner {
     for (let i = 0; i < 200; i += 1) {
       const r = await openCases(new Date(endMs), 500);
       if (r.opened === 0 && r.considered === 0) break;
+    }
+    for (let i = 0; i < 200; i += 1) {
+      const g = await gateOpenCases(new Date(endMs), 500);
+      if (g.evaluated === 0) break;
     }
     log.info('simulator finalised', {
       abandoned,

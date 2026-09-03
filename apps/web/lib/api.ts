@@ -364,6 +364,15 @@ export interface CaseDetail {
     options: import('@/components/StrategyComparison').StrategyOption[];
   } | null;
   decided_at_open: unknown;
+  policy: {
+    id: string;
+    verdict: 'ALLOW' | 'DENY' | 'REQUIRE_APPROVAL';
+    proposed_action: string;
+    policy_version: string;
+    input_hash: string;
+    decided_at: string;
+    reasons: { rules?: import('@/components/PolicyRuleList').RuleResult[]; human_approval?: unknown };
+  }[];
 }
 
 export const fetchCases = (status?: string, limit = 100) =>

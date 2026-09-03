@@ -57,6 +57,9 @@ export default async function Home() {
           <a href="/model" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}>
             Model →
           </a>
+          <a href="/policy" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}>
+            Policy →
+          </a>
           <DriftIndicator drift={drift} />
           {summary?.window && (
             <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }} className="mono">

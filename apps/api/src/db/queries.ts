@@ -881,3 +881,155 @@ export async function activeModelVersion(db: Sql = sql): Promise<ModelVersionRow
     FROM model_versions WHERE is_active LIMIT 1`;
   return row ?? null;
 }
+
+// ── Policy (§7.7) ────────────────────────────────────────────────────────────
+
+export interface MerchantPolicyRow {
+  id: string;
+  is_paused: boolean;
+  daily_action_budget_paise: number;
+  daily_action_budget_count: number;
+}
+
+export async function merchantForPolicy(id: string, db: Sql = sql): Promise<MerchantPolicyRow | null> {
+  const [row] = await db<MerchantPolicyRow[]>`
+    SELECT id, is_paused, daily_action_budget_paise, daily_action_budget_count FROM merchants WHERE id = ${id}`;
+  return row ?? null;
+}
+
+/**
+ * The merchant's activity today and this hour, from persisted actions. "Today"
+ * and "this hour" are in **simulated** time, because that is the clock the
+ * budget is spent against.
+ */
+export async function merchantActivity(
+  merchantId: string,
+  now: string,
+  db: Sql = sql,
+): Promise<{ todayCount: number; todaySpendPaise: number; hourExposurePaise: number }> {
+  const [row] = await db<{ today_count: number; today_spend: number; hour_exposure: number }[]>`
+    SELECT
+      count(*) FILTER (WHERE a.created_at >= date_trunc('day', ${now}::timestamptz))::int AS today_count,
+      COALESCE(sum(a.cost_paise) FILTER (WHERE a.created_at >= date_trunc('day', ${now}::timestamptz)), 0)::bigint AS today_spend,
+      COALESCE(sum(p.amount_paise) FILTER (WHERE a.created_at >= date_trunc('hour', ${now}::timestamptz)), 0)::bigint AS hour_exposure
+    FROM recovery_actions a
+    JOIN recovery_cases c ON c.id = a.case_id
+    JOIN payments p ON p.id = c.payment_id
+    WHERE c.merchant_id = ${merchantId}
+      AND a.created_at < ${now}::timestamptz + interval '1 second'
+      AND a.status <> 'FAILED'`;
+  return {
+    todayCount: row?.today_count ?? 0,
+    todaySpendPaise: row?.today_spend ?? 0,
+    hourExposurePaise: row?.hour_exposure ?? 0,
+  };
+}
+
+export async function lastActionOnPayment(paymentId: string, db: Sql = sql): Promise<string | null> {
+  const [row] = await db<{ at: string | null }[]>`
+    SELECT max(a.created_at)::text AS at
+    FROM recovery_actions a JOIN recovery_cases c ON c.id = a.case_id
+    WHERE c.payment_id = ${paymentId}`;
+  return row?.at ? new Date(row.at).toISOString() : null;
+}
+
+/** Cases the strategy engine chose to act on, with no policy decision yet. */
+export interface GateCandidate {
+  case_id: string;
+  payment_id: string;
+  merchant_id: string;
+  chosen_strategy: string;
+  expected_value_paise: number;
+  strategy_options: { strategy: string; costPaise: number }[];
+  payment_state: string;
+  amount_paise: number;
+  attempt_index: number;
+  failure_code: string | null;
+  abandoned: boolean;
+  method: string;
+  bank: string | null;
+  is_international: boolean;
+  card_network: string | null;
+  opted_out: boolean;
+}
+
+export async function gateCandidates(limit: number, db: Sql = sql): Promise<GateCandidate[]> {
+  return db<GateCandidate[]>`
+    SELECT c.id AS case_id, c.payment_id, c.merchant_id, c.chosen_strategy, c.expected_value_paise,
+           c.strategy_options,
+           p.state::text AS payment_state, p.amount_paise, p.attempt_index, p.failure_code,
+           p.abandoned, p.method::text AS method, p.bank, p.is_international, p.card_network,
+           cu.opted_out
+    FROM recovery_cases c
+    JOIN payments p ON p.id = c.payment_id
+    JOIN customers cu ON cu.id = p.customer_id
+    WHERE c.status = 'OPEN'
+      AND c.chosen_strategy IS NOT NULL
+      AND c.chosen_strategy <> 'do_nothing'
+      AND NOT EXISTS (SELECT 1 FROM policy_decisions d WHERE d.case_id = c.id)
+    ORDER BY c.opened_at
+    LIMIT ${limit}`;
+}
+
+export async function openIncidentOnPayment(
+  p: { method: string; bank: string | null; is_international: boolean; card_network: string | null },
+  db: Sql = sql,
+): Promise<boolean> {
+  const [row] = await db<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM incidents i
+    WHERE i.status = 'OPEN' AND (
+      i.dimension = 'all'
+      OR (i.dimension = 'method' AND i.dimension_value = ${p.method})
+      OR (i.dimension = 'bank' AND i.dimension_value = ${p.bank ?? 'none'})
+      OR (i.dimension = 'is_international' AND i.dimension_value = ${p.is_international ? 'true' : 'false'})
+      OR (i.dimension = 'card_network' AND i.dimension_value = ${p.card_network ?? 'none'})
+    )`;
+  return (row?.n ?? 0) > 0;
+}
+
+export interface PolicyDecisionRow {
+  id: string;
+  case_id: string;
+  proposed_action: string;
+  verdict: 'ALLOW' | 'DENY' | 'REQUIRE_APPROVAL';
+  reasons: unknown;
+  policy_version: string;
+  input_hash: string;
+  decided_at: string;
+  payment_id: string;
+  amount_paise: number;
+  chosen_strategy: string | null;
+}
+
+export async function listPolicyDecisions(limit: number, db: Sql = sql): Promise<PolicyDecisionRow[]> {
+  return db<PolicyDecisionRow[]>`
+    SELECT d.*, c.payment_id, p.amount_paise, c.chosen_strategy
+    FROM policy_decisions d
+    JOIN recovery_cases c ON c.id = d.case_id
+    JOIN payments p ON p.id = c.payment_id
+    ORDER BY d.decided_at DESC, d.id DESC LIMIT ${limit}`;
+}
+
+export async function policyDecisionCounts(db: Sql = sql): Promise<Record<string, number>> {
+  const rows = await db<{ verdict: string; n: number }[]>`
+    SELECT verdict, count(*)::int AS n FROM policy_decisions GROUP BY 1`;
+  return Object.fromEntries(rows.map((r) => [r.verdict, r.n]));
+}
+
+export async function decisionsForCase(caseId: string, db: Sql = sql): Promise<PolicyDecisionRow[]> {
+  return db<PolicyDecisionRow[]>`
+    SELECT d.*, c.payment_id, p.amount_paise, c.chosen_strategy
+    FROM policy_decisions d
+    JOIN recovery_cases c ON c.id = d.case_id
+    JOIN payments p ON p.id = c.payment_id
+    WHERE d.case_id = ${caseId}
+    ORDER BY d.decided_at, d.id`;
+}
+
+/** The kill switch (§7.7 rule 1). Read by the policy engine on every decision. */
+export async function setMerchantPaused(id: string, paused: boolean, db: Sql = sql): Promise<MerchantRow | null> {
+  const [row] = await db<MerchantRow[]>`
+    UPDATE merchants SET is_paused = ${paused} WHERE id = ${id}
+    RETURNING id, name, is_paused, daily_action_budget_paise, daily_action_budget_count`;
+  return row ?? null;
+}
