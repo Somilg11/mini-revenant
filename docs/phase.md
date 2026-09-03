@@ -789,18 +789,64 @@ data rather than written down.
 
 ## P11 — Strategy engine
 
-**Status:** TODO
+**Status:** DONE — 255 unit + 74 integration
 
-- `domain/strategy.ts` — five options, `do_nothing` always on the ballot,
-  integer paise throughout
-- `customerMultiplier = 1.0 + min(0.5, ltvPaise / 5_000_000)`, caps at 1.5×
-- Cost/friction table of §7.6
-- `StrategyComparison` — winner highlighted, **losers greyed but visible**
+- `domain/strategy.ts` — five options, expected value in integer paise, the
+  §7.6 cost and friction table, `customerMultiplier` capping at 1.5×,
+  `do_nothing` on every ballot and winning whenever no option clears zero
+  (strictly — a break-even intervention is not worth being wrong about)
+- `app/recovery.ts` — `decide()` runs at case open and on every re-price;
+  `chosen_strategy`, all five `strategy_options` and `expected_value_paise` are
+  stored so what was decided at the time is auditable
+- `/api/v1/cases/:id` returns the decision recomputed live beside the stored one
+- Web: `StrategyComparison` — EV bars, winner highlighted, losers greyed but
+  visible, each with the rationale sentence
 
-**Gate:** four options with EV rendered · `do_nothing` visibly wins on fraud and
-on tiny amounts · **`alternate_gateway` wins on `CROSS_BORDER` codes and loses to
-`retry` on domestic `INSUFFICIENT_FUNDS`** — both asserted in tests, or it is a
-second retry bot (§14).
+**Gate, on the 6,839 real cases:**
+
+| Situation | Chosen |
+|---|---|
+| `THREEDS_FAILED`, international | **`alternate_gateway` 868 of 889** |
+| `FRAUD_SUSPECTED` | **`do_nothing` 51 of 51** |
+| `INSUFFICIENT_FUNDS`, domestic | `payment_link` 707 of 723 — **never the second processor** |
+| all cases | 327 `do_nothing` (fraud, opted out, tiny amounts, exhausted attempts) |
+
+Both §7.6 assertions hold: `alternate_gateway` wins on cross-border and loses on
+domestic insufficient-funds. The engine is seen choosing it selectively, from
+the numbers.
+
+**How the model reaches the EVs.** The per-intervention odds come from the
+measured §7.5 table; the case-level probability from whichever scorer is active
+rescales them so the best option agrees with it. The trained model's
+calibration therefore flows into every expected value rather than living only
+on the badge.
+
+### Where the spec disagrees with itself, and what was decided
+
+§7.6 says of its matrix: "if the EV engine disagrees with this table, one of the
+two is wrong and the case is worth reading." Three cases were worth reading.
+
+1. **Fraud.** At ₹4,800 the 2% odds floor still yields 8,340 paise of EV, so
+   pure economics had the engine asking a suspected fraudster for a different
+   card. §7.5's "recovers under nothing" is a statement of impossibility, and
+   the 1–2% is the clamp, not a chance. `TERMINAL` is now **unavailable**, not
+   unlikely — the same treatment as opted-out, and policy rule 4 denies it again
+   downstream.
+2. **Domestic `INSUFFICIENT_FUNDS`.** The prose says it "loses to a plain retry
+   every time"; the matrix says `alternate_method`; §7.5's odds (retry 0.18,
+   link 0.46, alternate 0.32) make `payment_link` win. The numbers decide, per
+   §7.6's own rule. The assertion that matters — never `alternate_gateway` — is
+   what the tests pin.
+3. **Cross-border with no second route.** The matrix says `payment_link` "in
+   the customer's currency"; §7.5 gives `CURRENCY_NOT_SUPPORTED` alternate 0.26
+   against link 0.20, and the matrix's answer assumes a multi-currency
+   presentment capability the odds table never prices. The engine follows the
+   table; the test records the conflict and pins the property that holds either
+   way: the route is gone, so the customer is asked for something.
+
+**Performance note:** re-pricing all 6,839 cases takes ~15 s, one worklist
+query per case. Fine for the demo; a batched features query is the fix if it
+ever matters.
 
 ---
 

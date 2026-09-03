@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 import { fetchCase } from '@/lib/api';
 import { formatInrCompact, formatPct, exactPaise } from '@/lib/format';
 import { SourceBadge } from '@/components/SourceBadge';
+import { StrategyComparison } from '@/components/StrategyComparison';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,7 +28,7 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
   } catch {
     notFound();
   }
-  const { case: c, odds, features } = detail;
+  const { case: c, odds, features, decision } = detail;
   const code = c.failure_code ?? (c.abandoned ? 'CHECKOUT_ABANDONED' : '—');
   const ev = c.recovery_probability === null ? null : Math.round(c.recovery_probability * c.amount_paise);
 
@@ -60,13 +61,17 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
         <Tile label="Expected value" value={ev === null ? '—' : formatInrCompact(ev)} note="amount × P(recovery) — an expectation, not a promise" titlePaise={ev ?? undefined} tone="accent" />
       </section>
 
+      {decision && (
+        <section style={{ marginTop: 8 }}>
+          <StrategyComparison options={decision.options} chosen={decision.chosen} multiplier={decision.customer_multiplier} />
+        </section>
+      )}
+
       {odds && (
         <section className="card" style={{ marginTop: 8 }}>
-          <div className="label">What each intervention is worth</div>
+          <div className="label">Probability behind each intervention, before costs</div>
           <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 4 }}>
-            Probability that this intervention recovers the payment, before costs. The cost-adjusted
-            comparison and the choice arrive in P11; <span className="mono">do_nothing</span> is on the
-            ballot in every case.
+            From the measured §7.5 table, before the cost and friction applied above.
           </div>
           <div style={{ display: 'grid', gap: 6, marginTop: 12 }}>
             {(Object.entries(odds) as [keyof typeof odds, number][])

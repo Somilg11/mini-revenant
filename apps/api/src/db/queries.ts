@@ -566,6 +566,7 @@ export interface RecoveryCandidate {
   seconds_since_last_attempt: number;
   incident_active: boolean;
   opted_out: boolean;
+  lifetime_value_paise: number;
 }
 
 /**
@@ -630,7 +631,8 @@ export async function recoveryCandidates(
             OR (i.dimension = 'card_network' AND i.dimension_value = COALESCE(c.card_network, 'none'))
           )
       ) AS incident_active,
-      cu.opted_out
+      cu.opted_out,
+      cu.lifetime_value_paise
     FROM candidate c
     JOIN customers cu ON cu.id = c.customer_id
     LEFT JOIN LATERAL (
@@ -770,7 +772,8 @@ export async function candidateForPayment(
             OR (i.dimension = 'card_network' AND i.dimension_value = COALESCE(p.card_network, 'none'))
           )
       ) AS incident_active,
-      cu.opted_out
+      cu.opted_out,
+      cu.lifetime_value_paise
     FROM payments p
     JOIN customers cu ON cu.id = p.customer_id
     LEFT JOIN LATERAL (
@@ -833,6 +836,7 @@ export async function trainingRows(db: Sql = sql): Promise<TrainingRow[]> {
           )
       ) AS incident_active,
       cu.opted_out,
+      cu.lifetime_value_paise,
       l.recoverable,
       l.split
     FROM ground_truth_labels l

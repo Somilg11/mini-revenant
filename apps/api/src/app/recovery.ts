@@ -14,6 +14,8 @@ import {
   type ActiveModel,
   type Features,
 } from '../domain/recovery-model.ts';
+import { failureFamily } from '../domain/failure-codes.ts';
+import { choose, type StrategyDecision } from '../domain/strategy.ts';
 import { isUniqueViolation } from '../lib/errors.ts';
 import { log } from '../lib/logger.ts';
 
@@ -49,6 +51,30 @@ export function featuresOf(c: RecoveryCandidate): Features {
     incidentActive: c.incident_active,
     secondaryRouteAvailable: secondaryRouteSupports(c.method, c.card_network),
   };
+}
+
+/**
+ * Runs the strategy engine for one candidate (§7.6).
+ *
+ * The per-intervention odds come from the measured table; the case-level
+ * probability from whichever scorer is active rescales them so a calibrated
+ * model's number reaches the EVs. All five options are returned, `do_nothing`
+ * included, because the losers beside the winner are the demo moment.
+ */
+export function decide(c: RecoveryCandidate, caseProbability: number | null): StrategyDecision {
+  const f = featuresOf(c);
+  return choose({
+    amountPaise: c.amount_paise,
+    odds: baselineOdds(f),
+    caseProbability: caseProbability ?? undefined,
+    customerLifetimeValuePaise: c.lifetime_value_paise,
+    customerOptedOut: c.opted_out,
+    secondaryRouteAvailable: f.secondaryRouteAvailable,
+    failureFamily: failureFamily(f.failureCode),
+    failureCode: f.failureCode,
+    attemptIndex: f.attemptIndex,
+    incidentActive: f.incidentActive,
+  });
 }
 
 /** Loads the active model once per sweep rather than once per case. */
@@ -111,6 +137,7 @@ export async function openCases(now: Date, limit = BATCH): Promise<OpenCasesResu
   for (const candidate of candidates) {
     const features = featuresOf(candidate);
     const { probability, source } = predict(features, model);
+    const decision = decide(candidate, probability);
 
     try {
       await sql.begin(async (tx) => {
@@ -118,10 +145,13 @@ export async function openCases(now: Date, limit = BATCH): Promise<OpenCasesResu
         await tx`
           INSERT INTO recovery_cases (
             id, payment_id, merchant_id, status,
-            recovery_probability, probability_source, opened_at
+            recovery_probability, probability_source,
+            chosen_strategy, strategy_options, expected_value_paise, opened_at
           ) VALUES (
             ${id}, ${candidate.id}, ${candidate.merchant_id}, 'OPEN',
-            ${probability}, ${source}, ${now.toISOString()}
+            ${probability}, ${source},
+            ${decision.chosen.strategy}, ${tx.json(decision.options as never)},
+            ${decision.chosen.expectedValuePaise}, ${now.toISOString()}
           )`;
 
         await notify(tx, 'case.opened', {
@@ -132,6 +162,8 @@ export async function openCases(now: Date, limit = BATCH): Promise<OpenCasesResu
           probability,
           probability_source: source,
           failure_code: features.failureCode,
+          chosen_strategy: decision.chosen.strategy,
+          expected_value_paise: decision.chosen.expectedValuePaise,
         });
       });
 
@@ -178,9 +210,13 @@ export async function rescoreOpenCases(): Promise<{ rescored: number; model: num
     const candidate = await candidateForPayment(c.payment_id);
     if (!candidate) continue;
     const { probability, source } = predict(featuresOf(candidate), model);
+    const decision = decide(candidate, probability);
     await sql`
       UPDATE recovery_cases
-      SET recovery_probability = ${probability}, probability_source = ${source}
+      SET recovery_probability = ${probability}, probability_source = ${source},
+          chosen_strategy = ${decision.chosen.strategy},
+          strategy_options = ${sql.json(decision.options as never)},
+          expected_value_paise = ${decision.chosen.expectedValuePaise}
       WHERE id = ${c.id}`;
     counts.rescored += 1;
     counts[source] += 1;

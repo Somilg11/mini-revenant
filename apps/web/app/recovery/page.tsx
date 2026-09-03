@@ -91,8 +91,10 @@ export default async function RecoveryPage() {
                   </td>
                   <td className="num" style={td}>{formatPct(c.recovery_probability, 0)}</td>
                   <td style={td}><SourceBadge source={c.probability_source} /></td>
-                  <td style={{ ...td, color: 'var(--text-tertiary)' }}>{c.chosen_strategy ?? 'not decided — P11'}</td>
-                  <td className="num" style={{ ...td, color: 'var(--text-tertiary)' }}>
+                  <td style={{ ...td, color: c.chosen_strategy === 'do_nothing' ? 'var(--text-tertiary)' : c.chosen_strategy === 'alternate_gateway' ? 'var(--accent)' : 'var(--text)' }}>
+                    <span className="mono" style={{ fontSize: 11 }}>{c.chosen_strategy ?? '—'}</span>
+                  </td>
+                  <td className="num" style={{ ...td, color: (c.expected_value_paise ?? 0) > 0 ? 'var(--text)' : 'var(--text-tertiary)' }} title={c.expected_value_paise === null ? undefined : exactPaise(c.expected_value_paise)}>
                     {c.expected_value_paise === null ? '—' : formatInrCompact(c.expected_value_paise)}
                   </td>
                   <td style={{ ...td, color: c.status === 'OPEN' ? 'var(--info)' : 'var(--text-tertiary)' }}>

@@ -358,6 +358,12 @@ export interface CaseDetail {
   case: RecoveryCase;
   features: Record<string, unknown> | null;
   odds: StrategyOdds | null;
+  decision: {
+    chosen: string;
+    customer_multiplier: number;
+    options: import('@/components/StrategyComparison').StrategyOption[];
+  } | null;
+  decided_at_open: unknown;
 }
 
 export const fetchCases = (status?: string, limit = 100) =>
