@@ -8,6 +8,7 @@ import { catchUp as detectionCatchUp } from '../app/detection.ts';
 import { diagnosePending } from '../app/rca.ts';
 import { openCases } from '../app/recovery.ts';
 import { runGate } from '../app/policy.ts';
+import { verifyOutcomes } from '../app/verify.ts';
 import { gateway, type GatewayStats } from './gateway.ts';
 import { listMerchants } from '../db/queries.ts';
 import { log } from '../lib/logger.ts';
@@ -126,6 +127,18 @@ class Runner {
 
   private async ensure(): Promise<void> {
     if (!this.dataset || !this.clock) await this.prepare();
+    // The gateway answers from the same answer key, from the moment a payment
+    // exists — not from whenever the labels row happens to land.
+    gateway.rememberLabels(
+      this.dataset!.labels.map((l) => ({
+        paymentId: l.paymentId,
+        recoverable_by_retry: l.recoverableByRetry,
+        recoverable_by_link: l.recoverableByLink,
+        recoverable_by_alternate: l.recoverableByAlternate,
+        recoverable_by_gateway: l.recoverableByGateway,
+        recoverable: l.recoverable,
+      })),
+    );
   }
 
   /**
@@ -369,6 +382,9 @@ class Runner {
         // Every proposal passes the gate before anything moves money, and
         // what the gate clears is executed in the same sweep (§9).
         await runGate(new Date(this.abandonmentSettledMs));
+        // Then judge what earlier actions produced: every prediction meets
+        // its outcome, once, and Revenue Recovered moves only from here.
+        await verifyOutcomes(new Date(this.abandonmentSettledMs));
       } catch (err) {
         // Detection failing must not stop the replay: the pipeline is the
         // thing under test, and a stalled clock hides that it still works.
@@ -412,15 +428,24 @@ class Runner {
       recoverable: l.recoverable,
       split: l.split,
     }));
+    // Only the labels whose payment exists, decided row by row inside the
+    // database rather than by letting the foreign key reject the batch: one
+    // unprojected payment used to fail the other 499, and most labels landed
+    // only at the end of the run — after the gateway had already been asked.
     for (let i = 0; i < rows.length; i += 500) {
-      const slice = rows[i] ? rows.slice(i, i + 500) : [];
+      const slice = rows.slice(i, i + 500);
       if (slice.length === 0) continue;
       await sql`
-        INSERT INTO ground_truth_labels ${sql(slice)}
-        ON CONFLICT (payment_id) DO NOTHING`.catch(() => {
-        // Payments this batch's labels point at have not all been projected
-        // yet. The next sweep picks them up; the labels are not lost.
-      });
+        INSERT INTO ground_truth_labels
+          (payment_id, recoverable_by_retry, recoverable_by_link, recoverable_by_alternate,
+           recoverable_by_gateway, recoverable, split)
+        SELECT l.payment_id, l.recoverable_by_retry, l.recoverable_by_link, l.recoverable_by_alternate,
+               l.recoverable_by_gateway, l.recoverable, l.split
+        FROM jsonb_to_recordset(${sql.json(slice as never)}) AS l(
+          payment_id text, recoverable_by_retry boolean, recoverable_by_link boolean,
+          recoverable_by_alternate boolean, recoverable_by_gateway boolean, recoverable boolean, split text)
+        WHERE EXISTS (SELECT 1 FROM payments p WHERE p.id = l.payment_id)
+        ON CONFLICT (payment_id) DO NOTHING`;
     }
   }
 
@@ -459,6 +484,13 @@ class Runner {
     for (let i = 0; i < 200; i += 1) {
       const g = await runGate(new Date(endMs), 500);
       if (g.gate.evaluated === 0 && g.execute.executed === 0 && g.execute.skipped === 0) break;
+    }
+    // The gateway settles inside 30 simulated minutes, but its events go
+    // through the relay; give them the drain before judging outcomes.
+    await this.waitForDrain();
+    for (let i = 0; i < 200; i += 1) {
+      const v = await verifyOutcomes(new Date(endMs), 500);
+      if (v.recovered === 0 && v.lost === 0) break;
     }
     log.info('simulator finalised', {
       abandoned,

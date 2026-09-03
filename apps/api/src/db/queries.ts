@@ -115,13 +115,17 @@ export interface SummaryRow {
  *   revenue_at_risk   = Σ amount WHERE the payment did not succeed and is still
  *                       unresolved (never since captured), created_at ∈ window
  *   revenue_recovered = Σ amount WHERE the payment is now CAPTURED **and it was
- *                       FAILED at some earlier point**, created_at ∈ window
+ *                       at risk at some earlier point** — a FAILED transition,
+ *                       or a recovery case, which only opens for an unresolved
+ *                       failure or an abandoned attempt — created_at ∈ window
  *
  * The two are **mutually exclusive by construction** — that is what stops the
- * same rupee being counted twice. The "was previously failed" test reads the
- * transition history rather than the current state: a captured payment that
- * never failed is an ordinary sale, and counting it inflates the number that
- * matters most.
+ * same rupee being counted twice. The "was previously at risk" test reads
+ * history rather than the current state: a captured payment that never failed
+ * or stalled is an ordinary sale, and counting it inflates the number that
+ * matters most. §10 says "was FAILED"; abandonment is a flag the next attempt
+ * clears rather than a state, so on the transition history alone every
+ * abandoned payment a link brought back would be an ordinary sale.
  *
  * A payment belongs to the window it was **created** in, not the one it settled
  * in, or it is a failure in one window and a recovery in another and the two
@@ -136,10 +140,18 @@ export async function summaryRow(w: Window, db: Sql = sql): Promise<SummaryRow> 
       count(*) FILTER (WHERE p.abandoned)::int          AS abandoned,
       COALESCE(sum(p.amount_paise) FILTER (WHERE p.state <> 'CAPTURED'), 0)::bigint
         AS revenue_at_risk_paise,
+      -- "Was at risk earlier": a FAILED transition, or a recovery case — which
+      -- only ever opens for an unresolved failure or an abandoned attempt.
+      -- Abandonment is a flag the next attempt clears, not a state, so the
+      -- transition history alone would miss every abandoned payment a link
+      -- brought back.
       COALESCE(sum(p.amount_paise) FILTER (
-        WHERE p.state = 'CAPTURED' AND EXISTS (
-          SELECT 1 FROM payment_state_transitions t
-          WHERE t.payment_id = p.id AND t.to_state = 'FAILED' AND NOT t.stale
+        WHERE p.state = 'CAPTURED' AND (
+          EXISTS (
+            SELECT 1 FROM payment_state_transitions t
+            WHERE t.payment_id = p.id AND t.to_state = 'FAILED' AND NOT t.stale
+          )
+          OR EXISTS (SELECT 1 FROM recovery_cases c WHERE c.payment_id = p.id)
         )
       ), 0)::bigint AS revenue_recovered_paise
     FROM payments p
@@ -196,7 +208,9 @@ export async function attributionRow(w: Window, db: Sql = sql): Promise<Attribut
     SELECT
       COALESCE(sum(v.credited_amount_paise) FILTER (WHERE v.attribution = 'direct'), 0)::bigint   AS direct_paise,
       COALESCE(sum(v.credited_amount_paise) FILTER (WHERE v.attribution = 'assisted'), 0)::bigint AS assisted_paise,
-      COALESCE(sum(v.credited_amount_paise) FILTER (WHERE v.attribution = 'organic'), 0)::bigint  AS organic_paise,
+      -- Organic credits zero, so what is reported is what came back, not what
+      -- was credited — the honest figure is the one that is not ours.
+      COALESCE(sum(v.recovered_amount_paise) FILTER (WHERE v.attribution = 'organic' AND v.actual_recovered), 0)::bigint AS organic_paise,
       count(*)::int AS verified
     FROM outcome_verifications v
     JOIN recovery_cases c ON c.id = v.case_id
@@ -1197,4 +1211,198 @@ export async function actionStats(db: Sql = sql): Promise<ActionStats> {
       COALESCE(sum(cost_paise) FILTER (WHERE status = 'SUCCEEDED'), 0)::bigint AS cost_paise
     FROM recovery_actions`;
   return row ?? { total: 0, succeeded: 0, failed: 0, escalated: 0, in_flight: 0, retried: 0, cost_paise: 0 };
+}
+
+// ── Verification and attribution (§10) ───────────────────────────────────────
+
+export interface CapturedCaseRow {
+  case_id: string;
+  payment_id: string;
+  amount_paise: number;
+  recovery_probability: number | null;
+  captured_at: string;
+  /** The gateway reference the capture event carried, if any. */
+  capture_reference: string | null;
+  /** Our latest successful action on the case, if any. */
+  acted_at: string | null;
+  action_reference: string | null;
+}
+
+/**
+ * Live cases whose payment is now CAPTURED. The capture's time and reference
+ * come from the transition and its event, not from the payment row, so the
+ * attribution is computed from what actually happened and when.
+ */
+export async function capturedCases(limit: number, db: Sql = sql): Promise<CapturedCaseRow[]> {
+  return db<CapturedCaseRow[]>`
+    SELECT c.id AS case_id, c.payment_id, p.amount_paise, c.recovery_probability,
+           t.occurred_at AS captured_at,
+           e.payload->>'gateway_reference' AS capture_reference,
+           a.created_at AS acted_at, a.gateway_reference AS action_reference
+    FROM recovery_cases c
+    JOIN payments p ON p.id = c.payment_id
+    JOIN LATERAL (
+      SELECT occurred_at, event_id FROM payment_state_transitions
+      WHERE payment_id = p.id AND to_state = 'CAPTURED' AND NOT stale
+      ORDER BY occurred_at DESC LIMIT 1
+    ) t ON TRUE
+    LEFT JOIN payment_events e ON e.event_id = t.event_id
+    LEFT JOIN LATERAL (
+      SELECT created_at, gateway_reference FROM recovery_actions
+      WHERE case_id = c.id AND status = 'SUCCEEDED'
+      ORDER BY created_at DESC LIMIT 1
+    ) a ON TRUE
+    WHERE c.status IN ('OPEN', 'ACTING')
+      AND p.state = 'CAPTURED'
+      AND NOT EXISTS (SELECT 1 FROM outcome_verifications v WHERE v.case_id = c.id)
+    ORDER BY t.occurred_at
+    LIMIT ${limit}`;
+}
+
+export interface LostCaseRow {
+  case_id: string;
+  payment_id: string;
+  amount_paise: number;
+  recovery_probability: number | null;
+  /** The last thing we did, or the case opening for a case we chose not to act on. */
+  acted_at: string;
+}
+
+/**
+ * Cases the assist window has run out on: every action settled, the payment
+ * still not captured, and `interval` since the last action. Cases with a
+ * pending action, a deferred gate or an approval outstanding are not here —
+ * they have not been given their chance yet.
+ */
+export async function lostCases(now: string, interval: string, limit: number, db: Sql = sql): Promise<LostCaseRow[]> {
+  return db<LostCaseRow[]>`
+    SELECT c.id AS case_id, c.payment_id, p.amount_paise, c.recovery_probability,
+           a.last_at AS acted_at
+    FROM recovery_cases c
+    JOIN payments p ON p.id = c.payment_id
+    JOIN LATERAL (
+      SELECT max(created_at) AS last_at,
+             bool_and(status IN ('SUCCEEDED', 'FAILED', 'ESCALATED')) AS settled
+      FROM recovery_actions WHERE case_id = c.id
+    ) a ON TRUE
+    WHERE c.status = 'ACTING'
+      AND p.state <> 'CAPTURED'
+      AND a.settled
+      AND a.last_at <= ${now}::timestamptz - ${interval}::interval
+      AND NOT EXISTS (SELECT 1 FROM outcome_verifications v WHERE v.case_id = c.id)
+    ORDER BY a.last_at
+    LIMIT ${limit}`;
+}
+
+/** Cases the engine chose `do_nothing` on, once the same window has passed since opening. */
+export async function unactedLostCases(now: string, interval: string, limit: number, db: Sql = sql): Promise<LostCaseRow[]> {
+  return db<LostCaseRow[]>`
+    SELECT c.id AS case_id, c.payment_id, p.amount_paise, c.recovery_probability,
+           c.opened_at AS acted_at
+    FROM recovery_cases c
+    JOIN payments p ON p.id = c.payment_id
+    WHERE c.status = 'OPEN'
+      AND c.chosen_strategy = 'do_nothing'
+      AND p.state <> 'CAPTURED'
+      AND c.opened_at <= ${now}::timestamptz - ${interval}::interval
+      AND NOT EXISTS (SELECT 1 FROM outcome_verifications v WHERE v.case_id = c.id)
+    ORDER BY c.opened_at
+    LIMIT ${limit}`;
+}
+
+/**
+ * How far the *data* has got: the `occurred_at` at the head of the pending
+ * outbox, or `null` when nothing is pending. The relay can trail the clock by
+ * hours of simulated time, and a verdict of "nothing captured in six hours"
+ * is only honest once the six hours of events have actually been projected.
+ */
+export async function outboxWatermark(db: Sql = sql): Promise<string | null> {
+  const [row] = await db<{ at: string | null }[]>`
+    SELECT payload->>'occurred_at' AS at FROM outbox
+    WHERE sent_at IS NULL AND NOT dead_lettered
+    ORDER BY id LIMIT 1`;
+  return row?.at ? new Date(row.at).toISOString() : null;
+}
+
+export interface VerificationRow {
+  id: string;
+  case_id: string;
+  attribution: 'direct' | 'assisted' | 'organic';
+  recovered_amount_paise: number;
+  credited_amount_paise: number;
+  predicted_probability: number | null;
+  actual_recovered: boolean;
+  verified_at: string;
+}
+
+/**
+ * Writes the verdict and closes the case in one transaction. The unique
+ * index on `case_id` is the guard: a second verdict for the same case
+ * inserts nothing and changes nothing.
+ */
+export async function recordVerification(
+  v: Omit<VerificationRow, 'id'> & { id: string; caseStatus: 'RECOVERED' | 'LOST' },
+  db: Sql = sql,
+): Promise<boolean> {
+  return db.begin(async (tx) => {
+    const inserted = await tx<{ id: string }[]>`
+      INSERT INTO outcome_verifications
+        (id, case_id, attribution, recovered_amount_paise, credited_amount_paise,
+         predicted_probability, actual_recovered, verified_at)
+      VALUES (${v.id}, ${v.case_id}, ${v.attribution}, ${v.recovered_amount_paise}, ${v.credited_amount_paise},
+              ${v.predicted_probability}, ${v.actual_recovered}, ${v.verified_at})
+      ON CONFLICT (case_id) DO NOTHING
+      RETURNING id`;
+    if (inserted.length === 0) return false;
+    await tx`
+      UPDATE recovery_cases SET status = ${v.caseStatus}, closed_at = ${v.verified_at}
+      WHERE id = ${v.case_id} AND status IN ('OPEN', 'ACTING')`;
+    return true;
+  }) as Promise<boolean>;
+}
+
+export async function verificationForCase(caseId: string, db: Sql = sql): Promise<VerificationRow | null> {
+  const [row] = await db<VerificationRow[]>`SELECT * FROM outcome_verifications WHERE case_id = ${caseId}`;
+  return row ?? null;
+}
+
+export interface VerifiedOutcome {
+  predicted_probability: number;
+  actual_recovered: boolean;
+  probability_source: 'model' | 'baseline' | null;
+}
+
+/** Every prediction that has met its outcome — the feedback loop's raw material. */
+export async function verifiedOutcomes(db: Sql = sql): Promise<VerifiedOutcome[]> {
+  return db<VerifiedOutcome[]>`
+    SELECT v.predicted_probability, v.actual_recovered, c.probability_source
+    FROM outcome_verifications v
+    JOIN recovery_cases c ON c.id = v.case_id
+    WHERE v.predicted_probability IS NOT NULL`;
+}
+
+export interface VerificationStats {
+  verified: number;
+  recovered: number;
+  lost: number;
+  direct: number;
+  assisted: number;
+  organic: number;
+  credited_paise: number;
+  organic_paise: number;
+}
+
+export async function verificationStats(db: Sql = sql): Promise<VerificationStats> {
+  const [row] = await db<VerificationStats[]>`
+    SELECT
+      count(*)::int AS verified,
+      count(*) FILTER (WHERE actual_recovered)::int AS recovered,
+      count(*) FILTER (WHERE NOT actual_recovered)::int AS lost,
+      count(*) FILTER (WHERE actual_recovered AND attribution = 'direct')::int AS direct,
+      count(*) FILTER (WHERE actual_recovered AND attribution = 'assisted')::int AS assisted,
+      count(*) FILTER (WHERE actual_recovered AND attribution = 'organic')::int AS organic,
+      COALESCE(sum(credited_amount_paise), 0)::bigint AS credited_paise,
+      COALESCE(sum(recovered_amount_paise) FILTER (WHERE attribution = 'organic'), 0)::bigint AS organic_paise
+    FROM outcome_verifications`;
+  return row ?? { verified: 0, recovered: 0, lost: 0, direct: 0, assisted: 0, organic: 0, credited_paise: 0, organic_paise: 0 };
 }

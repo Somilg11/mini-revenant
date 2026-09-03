@@ -345,6 +345,7 @@ export interface CaseList {
     expected_recoverable_paise: number;
     probability_source_mix: { model: number; baseline: number };
     actions: ActionStats;
+    outcomes: VerificationStats;
   };
 }
 
@@ -375,6 +376,30 @@ export interface CaseDetail {
     reasons: { rules?: import('@/components/PolicyRuleList').RuleResult[]; human_approval?: unknown; deferred?: boolean };
   }[];
   actions: RecoveryAction[];
+  /** `null` until verification has run — unattributed, never a zero. */
+  outcome: OutcomeVerification | null;
+}
+
+export interface OutcomeVerification {
+  id: string;
+  case_id: string;
+  attribution: 'direct' | 'assisted' | 'organic';
+  recovered_amount_paise: number;
+  credited_amount_paise: number;
+  predicted_probability: number | null;
+  actual_recovered: boolean;
+  verified_at: string;
+}
+
+export interface VerificationStats {
+  verified: number;
+  recovered: number;
+  lost: number;
+  direct: number;
+  assisted: number;
+  organic: number;
+  credited_paise: number;
+  organic_paise: number;
 }
 
 export interface RecoveryAction {
@@ -412,6 +437,7 @@ export const fetchCases = (status?: string, limit = 100) =>
         expected_recoverable_paise: 0,
         probability_source_mix: { model: 0, baseline: 0 },
         actions: { total: 0, succeeded: 0, failed: 0, escalated: 0, in_flight: 0, retried: 0, cost_paise: 0 },
+        outcomes: { verified: 0, recovered: 0, lost: 0, direct: 0, assisted: 0, organic: 0, credited_paise: 0, organic_paise: 0 },
       },
     }),
   );
@@ -452,6 +478,21 @@ export interface ModelCard {
   } | null;
   versions: { id: string; trained_at: string; is_active: boolean; metrics: ModelMetrics }[];
 }
+
+export interface LiveCalibration {
+  verified: number;
+  by_source: { model: number; baseline: number };
+  observed_rate: number | null;
+  mean_predicted: number | null;
+  brier: number | null;
+  buckets: CalibrationBucket[];
+  model_buckets: CalibrationBucket[];
+}
+
+export const fetchLiveCalibration = () =>
+  api<LiveCalibration>('/api/v1/calibration/live').catch(
+    (): LiveCalibration => ({ verified: 0, by_source: { model: 0, baseline: 0 }, observed_rate: null, mean_predicted: null, brier: null, buckets: [], model_buckets: [] }),
+  );
 
 export const fetchModel = () =>
   api<ModelCard>('/api/v1/model').catch((): ModelCard => ({ active: null, versions: [] }));

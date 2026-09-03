@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { fetchModel, fetchCases } from '@/lib/api';
+import { fetchModel, fetchCases, fetchLiveCalibration } from '@/lib/api';
 import { formatCount } from '@/lib/format';
 import { CalibrationChart } from '@/components/CalibrationChart';
 import { SourceBadge } from '@/components/SourceBadge';
@@ -16,7 +16,7 @@ export const dynamic = 'force-dynamic';
  * the model is unplugged on stage, that number is what moves.
  */
 export default async function ModelPage() {
-  const [card, cases] = await Promise.all([fetchModel(), fetchCases(undefined, 1)]);
+  const [card, cases, live] = await Promise.all([fetchModel(), fetchCases(undefined, 1), fetchLiveCalibration()]);
   const a = card.active;
   const mix = cases.stats.probability_source_mix;
   const f = (v: number | null | undefined, d = 3) => (v === null || v === undefined ? '—' : v.toFixed(d));
@@ -43,8 +43,32 @@ export default async function ModelPage() {
 
       {a && (
         <>
-          <section style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 8, marginTop: 8 }}>
-            <CalibrationChart buckets={a.metrics.calibration_curve} label="Calibration — held-out test split" />
+          <section style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8 }}>
+            <CalibrationChart buckets={a.metrics.calibration_curve} label="Calibration — held-out test split (what the model promised)" />
+            {live.model_buckets.some((b) => b.count > 0) ? (
+              <CalibrationChart
+                buckets={live.model_buckets}
+                label={`Calibration — live, ${formatCount(live.by_source.model)} verified outcomes the model priced (what it delivered)`}
+              />
+            ) : (
+              <div className="card">
+                <div className="label">Calibration — live</div>
+                <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 8, lineHeight: 1.7 }}>
+                  Not measured yet. {live.verified > 0 ? `${formatCount(live.verified)} outcomes are verified, all priced by the baseline; ` : 'No prediction has met its outcome; '}
+                  the live curve is drawn from cases the model priced that have since recovered or been lost.
+                </div>
+              </div>
+            )}
+          </section>
+          {live.verified > 0 && (
+            <section style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginTop: 8 }}>
+              <Tile label="Verified outcomes" value={formatCount(live.verified)} note={`${formatCount(live.by_source.model)} priced by the model · ${formatCount(live.by_source.baseline)} by the baseline`} />
+              <Tile label="Mean predicted" value={live.mean_predicted === null ? '—' : `${(live.mean_predicted * 100).toFixed(1)}%`} note="average P(recovery) across verified cases" />
+              <Tile label="Observed rate" value={live.observed_rate === null ? '—' : `${(live.observed_rate * 100).toFixed(1)}%`} note="share that actually recovered" tone={live.observed_rate !== null && live.mean_predicted !== null && Math.abs(live.observed_rate - live.mean_predicted) > 0.1 ? 'warning' : undefined} />
+              <Tile label="Live Brier" value={f(live.brier)} note={a ? `training ${f(a.metrics.brier)} on the test split` : 'lower is better'} />
+            </section>
+          )}
+          <section style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 8, marginTop: 8 }}>
             <div className="card">
               <div className="label">What it is</div>
               <dl style={dl}>

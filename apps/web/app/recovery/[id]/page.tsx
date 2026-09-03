@@ -7,6 +7,7 @@ import { StrategyComparison } from '@/components/StrategyComparison';
 import { PolicyRuleList } from '@/components/PolicyRuleList';
 import { ApprovalBar } from '@/components/ApprovalBar';
 import { ActionList } from '@/components/ActionList';
+import { AttributionBadge } from '@/components/AttributionBadge';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,7 +32,7 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
   } catch {
     notFound();
   }
-  const { case: c, odds, features, decision, policy, actions } = detail;
+  const { case: c, odds, features, decision, policy, actions, outcome } = detail;
   const latest = policy.at(-1) ?? null;
   const awaiting = latest?.verdict === 'REQUIRE_APPROVAL' && c.status === 'OPEN';
   const code = c.failure_code ?? (c.abandoned ? 'CHECKOUT_ABANDONED' : '—');
@@ -104,6 +105,44 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
           </div>
         </section>
       )}
+
+      <section className="card" style={{ marginTop: 8 }}>
+        <div className="label">Verified outcome</div>
+        {outcome ? (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+              <span className="mono" style={{ fontSize: 15, fontWeight: 510, color: outcome.actual_recovered ? 'var(--success)' : 'var(--danger)' }}>
+                {outcome.actual_recovered ? 'RECOVERED' : 'LOST'}
+              </span>
+              <AttributionBadge kind={outcome.actual_recovered ? outcome.attribution : 'lost'} />
+              <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>verified {outcome.verified_at.replace('T', ' ').slice(0, 16)} (simulated)</span>
+            </div>
+            <dl style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 12px', margin: '10px 0 0', fontSize: 12 }}>
+              <dt style={{ color: 'var(--text-tertiary)' }}>recovered</dt>
+              <dd className="mono num" style={{ margin: 0 }} title={exactPaise(outcome.recovered_amount_paise)}>{formatInrCompact(outcome.recovered_amount_paise)}</dd>
+              <dt style={{ color: 'var(--text-tertiary)' }}>credited to Revenant</dt>
+              <dd className="mono num" style={{ margin: 0, color: outcome.credited_amount_paise > 0 ? 'var(--success)' : 'var(--text-secondary)' }} title={exactPaise(outcome.credited_amount_paise)}>
+                {formatInrCompact(outcome.credited_amount_paise)}
+                {outcome.actual_recovered && outcome.attribution === 'organic' && <span style={{ marginLeft: 8, color: 'var(--text-tertiary)' }}>— came back on its own; organic credits zero</span>}
+              </dd>
+              <dt style={{ color: 'var(--text-tertiary)' }}>predicted vs actual</dt>
+              <dd className="mono" style={{ margin: 0 }}>
+                {outcome.predicted_probability === null ? '— (no prediction)' : formatPct(outcome.predicted_probability, 0)} → {outcome.actual_recovered ? 'recovered' : 'not recovered'}
+                <span style={{ marginLeft: 8, color: 'var(--text-tertiary)' }}>feeds the live calibration curve</span>
+              </dd>
+            </dl>
+          </div>
+        ) : (
+          <div style={{ marginTop: 8, display: 'flex', alignItems: 'baseline', gap: 10, fontSize: 12, color: 'var(--text-tertiary)' }}>
+            <AttributionBadge kind="unattributed" />
+            {c.status === 'ACTING'
+              ? 'the action is out; the outcome is judged when the payment captures, or six simulated hours after the action if it does not'
+              : c.status === 'OPEN'
+                ? 'nothing to verify yet — no action has run on this case'
+                : 'closed by policy — no outcome to attribute'}
+          </div>
+        )}
+      </section>
 
       {odds && (
         <section className="card" style={{ marginTop: 8 }}>

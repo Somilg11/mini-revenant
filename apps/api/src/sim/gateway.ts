@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { ingestBatch } from '../app/ingest.ts';
 import type { WebhookEvent } from '../app/events.ts';
-import { gatewayInstrument, groundTruthLabel } from '../db/queries.ts';
+import { gatewayInstrument, groundTruthLabel, type GroundTruthLabelRow } from '../db/queries.ts';
 import {
   counterfactualFor,
   drawFault,
@@ -72,6 +72,8 @@ export interface GatewayStats {
   deduplicated: number;
   faults: { retryable: number; timeout: number; terminal: number };
   refusedByRoute: number;
+  /** Actions on a payment with no counterfactual on record — a dataset defect, counted rather than hidden. */
+  unlabelled: number;
 }
 
 /** A uint32 seed from any string, so every draw is a pure function of its key. */
@@ -85,13 +87,33 @@ export class SimulatedGateway {
    */
   private readonly memory = new Map<string, GatewayResult>();
   private readonly attemptsByKey = new Map<string, number>();
+  /**
+   * The answer key, held by the simulator that owns it. The runner hands the
+   * dataset's labels over at load, so the gateway can answer for a payment
+   * the moment it exists — the `ground_truth_labels` row is written later,
+   * once the foreign key allows, and is the fallback for a seeded database.
+   */
+  private readonly labels = new Map<string, GroundTruthLabelRow>();
   private readonly stats: GatewayStats = {
     calls: 0,
     effects: 0,
     deduplicated: 0,
     faults: { retryable: 0, timeout: 0, terminal: 0 },
     refusedByRoute: 0,
+    unlabelled: 0,
   };
+
+  rememberLabels(rows: Iterable<{ paymentId: string } & Omit<GroundTruthLabelRow, never>>): void {
+    for (const l of rows) {
+      this.labels.set(l.paymentId, {
+        recoverable_by_retry: l.recoverable_by_retry,
+        recoverable_by_link: l.recoverable_by_link,
+        recoverable_by_alternate: l.recoverable_by_alternate,
+        recoverable_by_gateway: l.recoverable_by_gateway,
+        recoverable: l.recoverable,
+      });
+    }
+  }
 
   async executeAction(kind: ActionKind, paymentId: string, idempotencyKey: string, now: Date): Promise<GatewayResult> {
     this.stats.calls += 1;
@@ -149,9 +171,15 @@ export class SimulatedGateway {
     }
 
     const column = counterfactualFor(kind);
-    const label = column ? await groundTruthLabel(paymentId) : null;
-    // No label means no counterfactual was ever decided for this payment — the
-    // honest answer is "did not recover", never a fresh coin toss.
+    const label = column ? (this.labels.get(paymentId) ?? (await groundTruthLabel(paymentId))) : null;
+    if (column && !label) {
+      // No counterfactual was ever decided for this payment. The answer is
+      // "did not recover" — never a fresh coin toss — but it is a dataset
+      // defect, so it is counted and said out loud rather than passed off as
+      // a measurement.
+      this.stats.unlabelled += 1;
+      log.warn('gateway has no counterfactual for this payment', { paymentId, kind });
+    }
     const recovered = column !== null && label !== null && label[column];
 
     const reference = `gw_${route === 'secondary' ? 's' : 'p'}_${createHash('sha256').update(key).digest('hex').slice(0, 12)}`;
@@ -211,6 +239,7 @@ export class SimulatedGateway {
     this.stats.deduplicated = 0;
     this.stats.faults = { retryable: 0, timeout: 0, terminal: 0 };
     this.stats.refusedByRoute = 0;
+    this.stats.unlabelled = 0;
   }
 }
 

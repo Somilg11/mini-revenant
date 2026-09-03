@@ -954,7 +954,7 @@ are spent against the wrong clock.
 | Needed retries | 190 (177 succeeded on the 2nd attempt, 9 on the 3rd) |
 | Timeouts reconciled | 53 found at the gateway and adopted, 48 confirmed lost then retried — **0 blind retries** |
 | Same key, two effects | 0 — asserted by constraint in the integration test, and by the fakes in the unit test |
-| Payments CAPTURED after a SUCCEEDED action | 325 of 3,365 (the counterfactual said so; attribution is P14) |
+| Payments CAPTURED after a SUCCEEDED action | 325 of 3,365 — **wrong, and P14 found why**: the gateway read labels the runner had not yet inserted (see P14 defect 1). After the fix the capture rate per kind matches its counterfactual to within a point |
 
 A key that draws three RETRYABLE faults in a row escalates rather than loops
 — (0.05)³ per key, none in this run, and the unit test pins it. The route
@@ -996,18 +996,101 @@ is a P18 decision.
 
 ## P14 — Verification and attribution
 
-**Status:** TODO
+**Status:** DONE — 9 unit, 8 integration, `bun run check` green
 
-- `app/verify.ts` — `direct` (captured within 30 simulated minutes, our
-  reference), `assisted` (within 6 simulated hours, different reference),
-  `organic` (**credits zero**)
-- Store `predicted_probability` beside `actual_recovered`; recompute the **live**
-  calibration curve
-- Second curve on `/model` beside the training one
+- `domain/attribution.ts` — PURE: `attribute(capture, action)` — `direct`
+  (captured ≤ 30 simulated minutes after our action **and** the capture
+  event carries our gateway reference), `assisted` (≤ 6 simulated hours,
+  different reference), `organic` (no action, captured before our action, or
+  beyond the window); `creditedPaise()` — full for direct and assisted,
+  **zero** for organic; `isLost()` — the assist window has fully elapsed
+- `app/verify.ts` — `verifyOutcomes(now)`. RECOVERED: a live case whose
+  payment is CAPTURED, attributed from the capture *transition* and its
+  *event payload* against the latest SUCCEEDED action's `created_at` and
+  `gateway_reference`; verified at the capture's own time. LOST: an ACTING
+  case whose actions have all settled, still not captured, ≥ 6 simulated hours
+  after the last one — or a `do_nothing` case 6 hours after opening. Deferred
+  and approval-pending cases are neither: they have not had their chance.
+  `predicted_probability` stored beside `actual_recovered`. `outcome.verified`
+  on the stream
+- **Once, by constraint:** `migrations/007_verification_once.sql` — a unique
+  index on `outcome_verifications(case_id)`; the insert is `ON CONFLICT DO
+  NOTHING` and the case closes only when the insert went in
+- `GET /api/v1/calibration/live` — predicted vs actual on verified outcomes:
+  ten buckets, observed rate, mean predicted, live Brier, split by scorer.
+  `GET /cases/:id` returns `outcome` (`null` = unattributed, never a zero);
+  `GET /cases` stats carry outcome counts
+- Web: `AttributionBadge` (`direct` / `assisted` / `organic` / `lost` /
+  `unattributed`); the case page's **Verified outcome** section — verdict,
+  badge, recovered vs credited with "organic credits zero" spelled out,
+  predicted → actual; `/model` shows the **live curve beside the training
+  one** plus live Brier / mean predicted / observed rate; the dashboard's
+  Revenue Recovered tile prints credited and organic side by side
+- Runner: `verifyOutcomes` after `runGate` in every sweep and, after a drain,
+  in finalisation
+- `revenue_recovered` now reads "was at risk earlier" as a FAILED transition
+  **or a recovery case** (which only opens for a failure or an abandoned
+  attempt). §10 says "was FAILED"; abandonment is a flag the next attempt
+  clears, not a state, so on the transition history alone every abandoned
+  payment a link brought back was an ordinary sale. `migrations/008` adds the
+  index that makes that EXISTS cheap
 
-**Gate:** outcomes attributed · `revenue_recovered` climbs · **organic
-recoveries credit zero and say `organic` in the UI** · where attribution has not
-run the UI says `unattributed`, never implying credit.
+**Gate, one 60× replay, zero errors:**
+
+| | |
+|---|---|
+| Actions | 3,070 — 3,040 SUCCEEDED · 28 FAILED · 2 ESCALATED · 190 retried |
+| Verified outcomes | **2,755 — 1,745 RECOVERED, 1,010 LOST**; 416 still ACTING inside their window at the end |
+| Attribution | **1,743 direct · 0 assisted · 2 organic** |
+| Revenue Recovered | **₹50.25L**, credited ₹50.21L, organic ₹4.2k **at zero credit** — the two figures agree to the rupee |
+| Recovery rate | 21.2% = ₹50.25L / (₹50.25L + ₹1.86Cr), both inputs printed beside it |
+| Capture rate per kind vs its counterfactual | retry 0.68 / 0.70 · link 0.54 / 0.55 · secondary route 0.59 / 0.59 · notify 0.50 / 0.49 |
+| Live calibration, 2,755 model-priced outcomes | mean predicted **0.82**, observed **0.63**, Brier 0.256 |
+
+Zero `assisted` is expected: the simulated gateway settles every action under
+its own reference inside 30 minutes, so nothing lands in the assist window
+with a different one. The rule is exercised by the integration test.
+
+**The live curve says the model is over-confident, and it is right to.** The
+model predicts `recoverable` — the disjunction of the four counterfactuals —
+while the outcome depends on the one intervention actually chosen, whose
+label rate is 0.50–0.70. Predicted 0.82 against observed 0.63 is exactly the
+gap between "recoverable by something" and "recovered by what we did". That
+is the feedback loop working: the number is on `/model` beside the training
+curve rather than discovered later. Closing the gap is a P15/P18 question —
+per-intervention probabilities are already what the strategy engine uses.
+
+### Three defects the verifier exposed, all fixed
+
+1. **The gateway had no answer key.** P13 read the counterfactual from
+   `ground_truth_labels`, which the runner inserts in 500-row batches with the
+   foreign-key failure swallowed — one unprojected payment failed the other
+   499, and most labels landed only at finalisation. The gateway answered
+   "did not recover" for **3,040 of 3,365** actions (9.7% captured against a
+   50–70% label rate). Now the runner hands the dataset's labels to the
+   gateway at load, the DB insert is per-existing-payment
+   (`jsonb_to_recordset … WHERE EXISTS payments`), and a missing label is
+   counted (`gateway.unlabelled`, 2 this run) and logged, never silently
+   `false`.
+2. **Losses were judged on the clock, not the data.** At 60× the relay trails
+   by hours of simulated time; "six hours with no capture" was true on the
+   clock while the capture sat in the outbox. First run: **2,611 LOST, 15
+   recovered**, with `revenue_recovered` at ₹15.9L saying otherwise. A loss is
+   now judged against `outboxWatermark()` — the `occurred_at` at the head of
+   the pending outbox — never past it. A recovery is still recognised the
+   moment it lands.
+3. **`revenue_recovered` missed abandoned payments** (above) and, once fixed,
+   ran 30 s per call for want of an index on `recovery_cases(payment_id)`;
+   a dashboard tab polling it starved the relay of pool connections and the
+   drain stalled at 98k rows. `migrations/008`.
+
+**Watch for:** `bun db:migrate` does not close its pool and never exits — it
+was always so; the API applies migrations at boot, which is the path that
+matters. Editing any file the API imports while a replay is running
+restarts `bun --watch` and discards the run. And `test:integration` started
+within ~10 s of killing `bun dev` fails two analytics tests on a missing test
+customer while the old process's relay unwinds — twice observed, never with
+the API fully dead (88/88).
 
 ---
 

@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { sql } from '../../db/client.ts';
-import { activeModelVersion, listModelVersions } from '../../db/queries.ts';
+import { activeModelVersion, listModelVersions, verifiedOutcomes } from '../../db/queries.ts';
+import { brier, calibrationCurve } from '../../ml/logistic.ts';
 import { rescoreOpenCases } from '../../app/recovery.ts';
 import { NotFoundError } from '../../lib/errors.ts';
 import { log } from '../../lib/logger.ts';
@@ -48,6 +49,29 @@ model.get('/api/v1/model/calibration', async (c) => {
     // The curve stored on `calibration` was fitted on val; the one on `metrics`
     // is measured on test. The page shows test — the honest one.
     buckets: metrics.calibration_curve ?? cal.curve ?? [],
+  });
+});
+
+/**
+ * The feedback loop (§10): predicted vs actual on **verified** outcomes, not
+ * on the test split. Beside the training curve on `/model`, this is what the
+ * model has actually delivered since. Empty is a state, not an error.
+ */
+model.get('/api/v1/calibration/live', async (c) => {
+  const rows = await verifiedOutcomes();
+  const scores = rows.map((r) => r.predicted_probability);
+  const labels: number[] = rows.map((r) => (r.actual_recovered ? 1 : 0));
+  const model = rows.filter((r) => r.probability_source === 'model');
+  return c.json({
+    verified: rows.length,
+    by_source: { model: model.length, baseline: rows.length - model.length },
+    observed_rate: rows.length > 0 ? labels.reduce((a: number, b: number) => a + b, 0) / rows.length : null,
+    mean_predicted: rows.length > 0 ? scores.reduce((a, b) => a + b, 0) / rows.length : null,
+    brier: brier(scores, labels),
+    buckets: rows.length > 0 ? calibrationCurve(scores, labels) : [],
+    // The model's own curve, on the outcomes it priced — the training curve's
+    // honest counterpart, without the baseline's rows mixed in.
+    model_buckets: model.length > 0 ? calibrationCurve(model.map((r) => r.predicted_probability), model.map((r) => (r.actual_recovered ? 1 : 0))) : [],
   });
 });
 

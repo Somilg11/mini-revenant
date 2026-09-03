@@ -109,8 +109,8 @@ export default async function Home() {
               tone={summary.revenue_recovered_paise > 0 ? 'success' : undefined}
               inputs={
                 summary.attribution.attributed
-                  ? `${formatInrCompact(summary.attribution.direct_paise + summary.attribution.assisted_paise)} credited`
-                  : 'unattributed — no action has run yet'
+                  ? `${formatInrCompact(summary.attribution.direct_paise + summary.attribution.assisted_paise)} credited · ${formatInrCompact(summary.attribution.organic_paise)} organic (zero credit)`
+                  : 'unattributed — no outcome verified yet'
               }
             />
             <MetricTile

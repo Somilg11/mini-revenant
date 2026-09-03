@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { actionStats, actionsForCase, candidateForPayment, caseStats, getCase, listCases } from '../../db/queries.ts';
+import { actionStats, actionsForCase, candidateForPayment, caseStats, getCase, listCases, verificationForCase, verificationStats } from '../../db/queries.ts';
 import { baselineOdds } from '../../domain/recovery-model.ts';
 import { decide, featuresOf } from '../../app/recovery.ts';
 import { approveCase, rejectCase } from '../../app/policy.ts';
@@ -20,7 +20,7 @@ cases.get('/api/v1/cases', async (c) => {
   }
   const limit = Math.min(500, Math.max(1, Number(c.req.query('limit') ?? 100)));
 
-  const [rows, stats, actions] = await Promise.all([listCases(status, limit), caseStats(), actionStats()]);
+  const [rows, stats, actions, outcomes] = await Promise.all([listCases(status, limit), caseStats(), actionStats(), verificationStats()]);
 
   return c.json({
     cases: rows,
@@ -29,6 +29,7 @@ cases.get('/api/v1/cases', async (c) => {
       total: stats.total,
       expected_recoverable_paise: stats.expected_recoverable_paise,
       actions,
+      outcomes,
       // Every probability carries the scorer that produced it, and the UI shows
       // it (§7.5). A prediction with no source is a number nobody can weigh.
       probability_source_mix: { model: stats.model, baseline: stats.baseline },
@@ -50,7 +51,7 @@ cases.get('/api/v1/cases/:id', async (c) => {
   // audit what was decided at the time.
   const decision = candidate ? decide(candidate, row.recovery_probability) : null;
 
-  const [policyDecisions, actions] = await Promise.all([decisionsForCase(id), actionsForCase(id)]);
+  const [policyDecisions, actions, outcome] = await Promise.all([decisionsForCase(id), actionsForCase(id), verificationForCase(id)]);
 
   return c.json({
     case: row,
@@ -58,6 +59,9 @@ cases.get('/api/v1/cases/:id', async (c) => {
     odds: features ? baselineOdds(features) : null,
     policy: policyDecisions,
     actions,
+    // Where attribution has not run the UI says `unattributed`; `null` here is
+    // that state, never a zero.
+    outcome,
     decision: decision
       ? {
           chosen: decision.chosen.strategy,
