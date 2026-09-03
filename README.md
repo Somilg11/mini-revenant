@@ -381,6 +381,28 @@ key is unset. `/ready` names the reason. This is a supported state.
 
 ---
 
+## Demo video
+
+`scripts/demo-video.ts` drives a real (headless) Chromium through the §13
+demo script — Play, the incident, the case, a live approval, an injected 429
+storm, the audit trail, `/whatif` — and records it; macOS `say` reads the
+narration in `scripts/demo-narration.json`. Case and incident ids come from
+`scripts/demo-targets.json`; pick ones that exist in your database.
+
+```bash
+bun add -d playwright && bunx playwright install chromium   # once
+bun run --cwd apps/api start & bun dev:web &                 # a replayed database
+OUT=/tmp/demo; mkdir -p $OUT
+# 1. voice track per section (Samantha, 168 wpm), durations.json beside it
+# 2. DEMO_OUT=$OUT bun scripts/demo-video.ts      → video/*.webm + timeline.json
+# 3. ffmpeg: delay each section's audio to its timeline start, mix, mux
+```
+
+The recorded page is 1600×1000; captions are burned in by the script, audio
+is placed from `timeline.json` so voice and picture stay aligned however long
+a click took. Approvals need budget on the simulated clock — jump the
+simulator to an early incident first, or the blast-radius rule defers them.
+
 ## Development
 
 ```bash

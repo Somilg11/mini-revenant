@@ -1,0 +1,74 @@
+[
+  {
+    "id": "00-open",
+    "text": "An Indian founder sells software globally. Last month, twenty-five of his international payments failed. He doesn't know why, and the only fix anyone offers him is a three-month processor migration, made on a hunch. Hold that thought."
+  },
+  {
+    "id": "01-what",
+    "text": "This is Revenant Mini: an autonomous revenue recovery control plane for payments. It does not retry payments. It decides which failures are worth money, proves why, and refuses to act when acting loses."
+  },
+  {
+    "id": "02-command",
+    "text": "This is the Command Center. Seven days of payments across five merchants, replayed through the real ingest path. Every number here is computed from the event stream; nothing is hard-coded. Revenue at risk. Revenue recovered. What we expect to recover, labelled as an expectation, not a promise. And the recovery rate, with the two numbers it came from printed beside it."
+  },
+  {
+    "id": "03-strip",
+    "text": "And this strip: domestic acceptance against international acceptance, with the gap in rupees. No merchant dashboard shows him that line. Press play and the replay runs on the simulated clock; the chart carries the seven days, with the injected incident windows shaded on it, and the jump bar lets you land on any of them."
+  },
+  {
+    "id": "04-detect",
+    "text": "Here are the incidents the detector opened on its own. The overall failure rate moved only a few points; he would have called that noise. Per dimension, international card acceptance collapsed. Five gates have to pass before anything is called an incident: volume, effect size, persistence, a z-score, and a check against the slice's own history."
+  },
+  {
+    "id": "05-scoreboard",
+    "text": "And the detector scores itself, live, against an answer key it never sees. Five incidents were injected into the data, along with two unlabelled noise windows. Precision, recall and root-cause accuracy are measured against that key on the simulator page. Both noise windows stayed clean."
+  },
+  {
+    "id": "06-rca",
+    "text": "Root cause. The naive answer is 'cards are failing', because cards carry the most failures. We apportion excess failures, not total ones. The answer comes out as a sentence: international, card, three-D-S failed, carrying the excess. That is the sentence he could not get out of his dashboard."
+  },
+  {
+    "id": "07-narrative",
+    "text": "The narrative underneath was phrased by a template, and the badge says so. Plug in any language model vendor and the badge reads L L M; switch it off and it reads template again, with every decision identical. The model never computes a number and never executes. The pipeline is correct with it switched off."
+  },
+  {
+    "id": "08-case",
+    "text": "Now a single case: one failed international payment. Its probability of recovery, with the badge naming which scorer produced it. And the five options side by side, each with its expected value in paise. A retry is worth little: same route, same challenge, same failure. Sending the same card through a second processor is worth far more. It picks the second route, and it costs nine rupees to find out. On a suspected fraud it does nothing at all. Doing nothing is on the ballot in every case."
+  },
+  {
+    "id": "09-policy",
+    "text": "Every proposal then passes a policy engine: twelve rules, evaluated in order, all of them, always. Kill switch. Never act after success. Opt-out is absolute. Attempt limits, cooldown, daily budgets, an hourly blast radius, never act at a loss, and above twenty-five thousand rupees a human signs. Every decision is stored with the hash of its inputs, the allows included."
+  },
+  {
+    "id": "10-deny",
+    "text": "I've paused this merchant, the kill switch. Approving a case for it now returns a denial, with all twelve reasons, not just the first objection. A human can sign for large money. A human cannot override a kill switch."
+  },
+  {
+    "id": "11-approve",
+    "text": "Here is a large payment waiting for approval. I approve it live. The policy is re-evaluated against current state, a human signs, and the action executes, with an idempotency key reserved in the database before the gateway was ever called. The executor accepts only a policy-approved action, a branded type whose constructor is not exported. Bypassing the gate is a compile error, not a code review comment."
+  },
+  {
+    "id": "12-fault",
+    "text": "Let me break the gateway on purpose. Three 429s queued. I approve another case, and watch the executor: it backs off, retries twice, then escalates instead of looping. A timeout with an unknown outcome is never blind-retried; it asks the gateway what it did with our reference. It stops rather than double-charges."
+  },
+  {
+    "id": "13-verify",
+    "text": "Outcomes are verified, once each, by constraint. This one was captured within thirty minutes with our reference: attributed direct, credited in full. Money that came back on its own is marked organic and credits zero. And every prediction meets its outcome: the live calibration curve shows what the model promised at training time next to what it actually delivered. On this run it says the model is over-confident, and it says so on the page rather than waiting to be caught."
+  },
+  {
+    "id": "14-audit",
+    "text": "The audit trail for that payment. Event, detection, diagnosis, agent decision, policy, action, outcome: one timeline in causal order, each stage with its inputs and the artefact it produced. The policy verdict is re-evaluated from its stored input on every request and the hash compared. Every number on this page is recomputable from what is stored."
+  },
+  {
+    "id": "15-whatif",
+    "text": "And now the question we opened with. This page replays the same held-out failed payments twice: once with what a merchant does today, one blind retry on everything, and once with Revenant. Same failures, by construction. Outcomes come from counterfactuals decided before either arm ran. Blind retries recover a little over seven lakh rupees. Revenant recovers over twenty-four lakh. Incremental: seventeen lakh."
+  },
+  {
+    "id": "16-founder",
+    "text": "And the row he asked about. International acceptance goes from sixty-eight percent to eighty-five, without switching processors, because most of those failures were route failures, not real declines. That is a computed answer to a question that thread could only argue about."
+  },
+  {
+    "id": "17-close",
+    "text": "Revenant does not retry payments. It decides which failures are worth money, proves why, and refuses to act when acting loses."
+  }
+]

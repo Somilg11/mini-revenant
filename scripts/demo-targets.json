@@ -1,0 +1,10 @@
+{
+  "incident": "inc_55c8821d-72f",
+  "recoveredCase": "case_37a37ca3-3ee",
+  "recoveredPayment": "pay_42_02445",
+  "approveCase": "case_f6c2557e-86a",
+  "faultCase": "case_37af9ade-75b",
+  "denyCase": "case_d6b07994-0ba",
+  "denyMerchant": "mch_kavir",
+  "showcaseCase": "case_53b19e66-ca4"
+}

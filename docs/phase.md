@@ -1313,6 +1313,28 @@ servers up: every page 200 with its content, faults queued and consumed
 through a live approve, evaluation scoreboard live. What a keyboard does was
 checked by reading, not by a browser — there is no browser here.
 
+**The demo video.** `scripts/demo-video.ts` drives headless Chromium through
+the eleven steps and records them; `scripts/demo-narration.json` is read by
+macOS `say`, and the audio is placed from the recorded `timeline.json` so
+voice and picture stay aligned however long a click took. Recording it found
+three things:
+
+1. **Auto-generating the dataset behind `GET /sim/state` pinned the API** for
+   the better part of a minute on every dashboard load — reverted. The
+   simulator page now reads the answer key from `/api/v1/evaluation` (the
+   database) when the runner holds no dataset, and offers *jump here* only
+   when it does.
+2. **"Latest decision" was by simulated time.** Jumping the clock back so
+   approvals have budget stamps a human's decision *earlier* than the
+   replay's, and the case page then showed the old `REQUIRE_APPROVAL` under a
+   fresh `DENY`. `decisionsForCase` now orders by id — ids carry the wall
+   clock, so the verdict made last governs. The audit trail keeps simulated
+   order; that is its job.
+3. **A replayed database cannot stream a feed on Play**: re-emitted events are
+   duplicates by constraint, so nothing reaches the projector. The narration
+   says what the clock and the chart do instead. A live feed needs a reset
+   and the ten-minute replay, which a six-minute video cannot carry.
+
 **Watch for:** two things the demo assumes that this environment could not
 prove — an LLM vendor answering (no key, see P15) and the replay keeping pace
 with the relay at 60× (see P13's known limitation; at 60× most cases open
