@@ -234,6 +234,26 @@ export function evaluatePolicy(input: PolicyInput): PolicyDecision {
   return { verdict, reasons, policyVersion: POLICY_VERSION, inputHash: hashInput(input) };
 }
 
+/**
+ * Rules that refuse because of *capacity*, not because of the payment: the
+ * cooldown, the daily count and spend budgets, the hourly blast radius. A DENY
+ * on these alone is "not now", not "never" — the case is worth keeping open
+ * and judging again once the window has moved. A DENY that includes any other
+ * rule closes the case.
+ */
+export const CAPACITY_RULES: ReadonlySet<number> = new Set([6, 7, 8, 9]);
+
+/**
+ * Every failed *DENY* rule is a capacity rule: the case is deferred, not
+ * abandoned. A failed REQUIRE_APPROVAL rule beside them does not make the
+ * refusal permanent — it only means a human will be asked once capacity frees.
+ */
+export function isDeferrable(decision: PolicyDecision): boolean {
+  if (decision.verdict !== 'DENY') return false;
+  const denied = decision.reasons.filter((r) => !r.passed && r.verdict === 'DENY');
+  return denied.length > 0 && denied.every((r) => CAPACITY_RULES.has(r.rule));
+}
+
 // ── The brand ────────────────────────────────────────────────────────────────
 
 /**

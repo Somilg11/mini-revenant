@@ -18,7 +18,7 @@
     "seed": "bun run --cwd apps/api seed",
     "train": "bun run --cwd apps/api train",
     "whatif": "bun run --cwd apps/api whatif",
-    "test": "bun test apps/api/src/domain apps/api/src/sim apps/api/src/ml",
+    "test": "bun test apps/api/src/domain apps/api/src/sim apps/api/src/ml apps/api/src/app",
     "typecheck": "bun run --cwd apps/api typecheck && bun run --cwd apps/web typecheck",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

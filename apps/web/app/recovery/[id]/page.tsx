@@ -6,6 +6,7 @@ import { SourceBadge } from '@/components/SourceBadge';
 import { StrategyComparison } from '@/components/StrategyComparison';
 import { PolicyRuleList } from '@/components/PolicyRuleList';
 import { ApprovalBar } from '@/components/ApprovalBar';
+import { ActionList } from '@/components/ActionList';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,7 +31,7 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
   } catch {
     notFound();
   }
-  const { case: c, odds, features, decision, policy } = detail;
+  const { case: c, odds, features, decision, policy, actions } = detail;
   const latest = policy.at(-1) ?? null;
   const awaiting = latest?.verdict === 'REQUIRE_APPROVAL' && c.status === 'OPEN';
   const code = c.failure_code ?? (c.abandoned ? 'CHECKOUT_ABANDONED' : '—');
@@ -86,7 +87,21 @@ export default async function CasePage({ params }: { params: Promise<{ id: strin
               </div>
             )}
           </div>
+          {latest.reasons.deferred && c.status === 'OPEN' && (
+            <div style={{ fontSize: 11, color: 'var(--warning)', marginTop: 8 }}>
+              Deferred, not abandoned: every failed rule is a capacity cap. The case stays open and is judged again once the hour or the day has moved on.
+            </div>
+          )}
           {policy.length > 1 && <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 8 }}>{policy.length} decisions on this case — every one persisted.</div>}
+        </section>
+      )}
+
+      {actions.length > 0 && (
+        <section className="card" style={{ marginTop: 8 }}>
+          <div className="label">Action</div>
+          <div style={{ marginTop: 8 }}>
+            <ActionList actions={actions} />
+          </div>
         </section>
       )}
 

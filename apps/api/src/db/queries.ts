@@ -933,7 +933,12 @@ export async function lastActionOnPayment(paymentId: string, db: Sql = sql): Pro
   return row?.at ? new Date(row.at).toISOString() : null;
 }
 
-/** Cases the strategy engine chose to act on, with no policy decision yet. */
+/**
+ * Cases the strategy engine chose to act on that the gate has not settled: no
+ * decision at all, or only *deferred* DENYs (capacity rules 6–9) whose latest
+ * is at least an hour old in simulated time — the blast radius is hourly, so
+ * an hour is the soonest a deferred case can possibly clear.
+ */
 export interface GateCandidate {
   case_id: string;
   payment_id: string;
@@ -953,7 +958,9 @@ export interface GateCandidate {
   opted_out: boolean;
 }
 
-export async function gateCandidates(limit: number, db: Sql = sql): Promise<GateCandidate[]> {
+export const DEFERRAL_INTERVAL = '1 hour';
+
+export async function gateCandidates(limit: number, now: string, db: Sql = sql): Promise<GateCandidate[]> {
   return db<GateCandidate[]>`
     SELECT c.id AS case_id, c.payment_id, c.merchant_id, c.chosen_strategy, c.expected_value_paise,
            c.strategy_options,
@@ -966,7 +973,11 @@ export async function gateCandidates(limit: number, db: Sql = sql): Promise<Gate
     WHERE c.status = 'OPEN'
       AND c.chosen_strategy IS NOT NULL
       AND c.chosen_strategy <> 'do_nothing'
-      AND NOT EXISTS (SELECT 1 FROM policy_decisions d WHERE d.case_id = c.id)
+      AND NOT EXISTS (
+        SELECT 1 FROM policy_decisions d
+        WHERE d.case_id = c.id
+          AND (NOT (d.reasons ? 'deferred')
+               OR d.decided_at > ${now}::timestamptz - ${DEFERRAL_INTERVAL}::interval))
     ORDER BY c.opened_at
     LIMIT ${limit}`;
 }
@@ -1032,4 +1043,158 @@ export async function setMerchantPaused(id: string, paused: boolean, db: Sql = s
     UPDATE merchants SET is_paused = ${paused} WHERE id = ${id}
     RETURNING id, name, is_paused, daily_action_budget_paise, daily_action_budget_count`;
   return row ?? null;
+}
+
+// ── Executor and gateway (§8.6, §9) ──────────────────────────────────────────
+
+export interface GatewayInstrumentRow {
+  method: string;
+  card_network: string | null;
+  failure_code: string | null;
+  amount_paise: number;
+}
+
+/** What the simulated gateway needs to know about a payment to answer for it. */
+export async function gatewayInstrument(paymentId: string, db: Sql = sql): Promise<GatewayInstrumentRow | null> {
+  const [row] = await db<GatewayInstrumentRow[]>`
+    SELECT method::text AS method, card_network, failure_code, amount_paise FROM payments WHERE id = ${paymentId}`;
+  return row ?? null;
+}
+
+export interface GroundTruthLabelRow {
+  recoverable_by_retry: boolean;
+  recoverable_by_link: boolean;
+  recoverable_by_alternate: boolean;
+  recoverable_by_gateway: boolean;
+  recoverable: boolean;
+}
+
+export async function groundTruthLabel(paymentId: string, db: Sql = sql): Promise<GroundTruthLabelRow | null> {
+  const [row] = await db<GroundTruthLabelRow[]>`
+    SELECT recoverable_by_retry, recoverable_by_link, recoverable_by_alternate, recoverable_by_gateway, recoverable
+    FROM ground_truth_labels WHERE payment_id = ${paymentId}`;
+  return row ?? null;
+}
+
+export type ActionStatus = 'RESERVED' | 'SENT' | 'SUCCEEDED' | 'FAILED' | 'ESCALATED';
+
+export interface ActionRow {
+  id: string;
+  case_id: string;
+  policy_decision_id: string;
+  kind: string;
+  idempotency_key: string;
+  status: ActionStatus;
+  attempts: number;
+  cost_paise: number;
+  gateway_reference: string | null;
+  error_class: 'RETRYABLE' | 'TERMINAL' | 'NEEDS_HUMAN' | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+/**
+ * Reserves the idempotency key **before** the gateway call. The UNIQUE
+ * constraint is the guard: a second reservation for the same key inserts
+ * nothing and returns the row that got there first, so the caller learns it
+ * is a replay without a read-then-write race.
+ */
+export async function reserveAction(
+  a: { id: string; caseId: string; decisionId: string; kind: string; idempotencyKey: string; costPaise: number; now: string },
+  db: Sql = sql,
+): Promise<{ row: ActionRow; fresh: boolean }> {
+  return db.begin(async (tx) => {
+    const [inserted] = await tx<ActionRow[]>`
+      INSERT INTO recovery_actions
+        (id, case_id, policy_decision_id, kind, idempotency_key, status, attempts, cost_paise, created_at)
+      VALUES (${a.id}, ${a.caseId}, ${a.decisionId}, ${a.kind}, ${a.idempotencyKey}, 'RESERVED', 0, ${a.costPaise}, ${a.now})
+      ON CONFLICT (idempotency_key) DO NOTHING
+      RETURNING *`;
+    if (inserted) {
+      await tx`UPDATE recovery_cases SET status = 'ACTING' WHERE id = ${a.caseId} AND status = 'OPEN'`;
+      return { row: inserted, fresh: true };
+    }
+    const [existing] = await tx<ActionRow[]>`SELECT * FROM recovery_actions WHERE idempotency_key = ${a.idempotencyKey}`;
+    if (!existing) throw new Error(`idempotency key ${a.idempotencyKey} neither inserted nor found`);
+    return { row: existing, fresh: false };
+  }) as Promise<{ row: ActionRow; fresh: boolean }>;
+}
+
+export async function markActionSent(id: string, attempts: number, db: Sql = sql): Promise<void> {
+  await db`UPDATE recovery_actions SET status = 'SENT', attempts = ${attempts} WHERE id = ${id}`;
+}
+
+export async function completeAction(
+  id: string,
+  outcome: {
+    status: 'SUCCEEDED' | 'FAILED' | 'ESCALATED';
+    attempts: number;
+    gatewayReference: string | null;
+    errorClass: 'RETRYABLE' | 'TERMINAL' | 'NEEDS_HUMAN' | null;
+    completedAt: string;
+  },
+  db: Sql = sql,
+): Promise<ActionRow> {
+  const [row] = await db<ActionRow[]>`
+    UPDATE recovery_actions SET
+      status = ${outcome.status}, attempts = ${outcome.attempts},
+      gateway_reference = ${outcome.gatewayReference}, error_class = ${outcome.errorClass},
+      completed_at = ${outcome.completedAt}
+    WHERE id = ${id}
+    RETURNING *`;
+  if (!row) throw new Error(`action ${id} vanished while completing`);
+  return row;
+}
+
+export async function actionsForCase(caseId: string, db: Sql = sql): Promise<ActionRow[]> {
+  return db<ActionRow[]>`SELECT * FROM recovery_actions WHERE case_id = ${caseId} ORDER BY created_at, id`;
+}
+
+export interface PendingExecutionRow {
+  decision_id: string;
+  case_id: string;
+  reasons: unknown;
+  policy_version: string;
+  input_hash: string;
+}
+
+/**
+ * Approved decisions the executor has not acted on: ALLOW verdicts — the
+ * gate's own and a human's — whose case is still OPEN and which have no action
+ * row. Crash between decision and action, and the next tick picks it up.
+ */
+export async function pendingExecutions(limit: number, db: Sql = sql): Promise<PendingExecutionRow[]> {
+  return db<PendingExecutionRow[]>`
+    SELECT d.id AS decision_id, d.case_id, d.reasons, d.policy_version, d.input_hash
+    FROM policy_decisions d
+    JOIN recovery_cases c ON c.id = d.case_id
+    WHERE d.verdict = 'ALLOW'
+      AND c.status = 'OPEN'
+      AND NOT EXISTS (SELECT 1 FROM recovery_actions a WHERE a.policy_decision_id = d.id)
+    ORDER BY d.decided_at, d.id
+    LIMIT ${limit}`;
+}
+
+export interface ActionStats {
+  total: number;
+  succeeded: number;
+  failed: number;
+  escalated: number;
+  in_flight: number;
+  retried: number;
+  cost_paise: number;
+}
+
+export async function actionStats(db: Sql = sql): Promise<ActionStats> {
+  const [row] = await db<ActionStats[]>`
+    SELECT
+      count(*)::int AS total,
+      count(*) FILTER (WHERE status = 'SUCCEEDED')::int AS succeeded,
+      count(*) FILTER (WHERE status = 'FAILED')::int AS failed,
+      count(*) FILTER (WHERE status = 'ESCALATED')::int AS escalated,
+      count(*) FILTER (WHERE status IN ('RESERVED', 'SENT'))::int AS in_flight,
+      count(*) FILTER (WHERE attempts > 1)::int AS retried,
+      COALESCE(sum(cost_paise) FILTER (WHERE status = 'SUCCEEDED'), 0)::bigint AS cost_paise
+    FROM recovery_actions`;
+  return row ?? { total: 0, succeeded: 0, failed: 0, escalated: 0, in_flight: 0, retried: 0, cost_paise: 0 };
 }

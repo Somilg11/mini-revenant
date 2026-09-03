@@ -1,8 +1,9 @@
 import { Hono } from 'hono';
-import { candidateForPayment, caseStats, getCase, listCases } from '../../db/queries.ts';
+import { actionStats, actionsForCase, candidateForPayment, caseStats, getCase, listCases } from '../../db/queries.ts';
 import { baselineOdds } from '../../domain/recovery-model.ts';
 import { decide, featuresOf } from '../../app/recovery.ts';
 import { approveCase, rejectCase } from '../../app/policy.ts';
+import { executor } from '../../app/executor.ts';
 import { decisionsForCase } from '../../db/queries.ts';
 import { runner } from '../../sim/runner.ts';
 import { NotFoundError, ValidationError } from '../../lib/errors.ts';
@@ -19,7 +20,7 @@ cases.get('/api/v1/cases', async (c) => {
   }
   const limit = Math.min(500, Math.max(1, Number(c.req.query('limit') ?? 100)));
 
-  const [rows, stats] = await Promise.all([listCases(status, limit), caseStats()]);
+  const [rows, stats, actions] = await Promise.all([listCases(status, limit), caseStats(), actionStats()]);
 
   return c.json({
     cases: rows,
@@ -27,6 +28,7 @@ cases.get('/api/v1/cases', async (c) => {
       open: stats.open,
       total: stats.total,
       expected_recoverable_paise: stats.expected_recoverable_paise,
+      actions,
       // Every probability carries the scorer that produced it, and the UI shows
       // it (§7.5). A prediction with no source is a number nobody can weigh.
       probability_source_mix: { model: stats.model, baseline: stats.baseline },
@@ -48,13 +50,14 @@ cases.get('/api/v1/cases/:id', async (c) => {
   // audit what was decided at the time.
   const decision = candidate ? decide(candidate, row.recovery_probability) : null;
 
-  const policyDecisions = await decisionsForCase(id);
+  const [policyDecisions, actions] = await Promise.all([decisionsForCase(id), actionsForCase(id)]);
 
   return c.json({
     case: row,
     features,
     odds: features ? baselineOdds(features) : null,
     policy: policyDecisions,
+    actions,
     decision: decision
       ? {
           chosen: decision.chosen.strategy,
@@ -69,11 +72,29 @@ cases.get('/api/v1/cases/:id', async (c) => {
 /** Simulated time, so a human approval lands on the clock the budgets use. */
 const simNow = () => new Date(runner.state().clock.now);
 
-/** Resolves a REQUIRE_APPROVAL. Execution follows in P13. */
+/** Resolves a REQUIRE_APPROVAL, then executes (§10). */
 cases.post('/api/v1/cases/:id/approve', async (c) => {
   const id = c.req.param('id');
-  const { action, decisionId } = await approveCase(id, simNow());
-  return c.json({ approved: true, decision_id: decisionId, action: { kind: action.kind, strategy: action.strategy, approved_by: action.approvedBy } });
+  const now = simNow();
+  const { action, decisionId } = await approveCase(id, now);
+  const r = await executor.execute(action, decisionId, now);
+  return c.json({
+    approved: true,
+    decision_id: decisionId,
+    action: {
+      id: r.action.id,
+      kind: action.kind,
+      strategy: action.strategy,
+      approved_by: action.approvedBy,
+      status: r.action.status,
+      attempts: r.action.attempts,
+      idempotency_key: r.action.idempotency_key,
+      gateway_reference: r.action.gateway_reference,
+      error_class: r.action.error_class,
+      reconciled: r.reconciled,
+      recovered: r.gateway?.recovered ?? null,
+    },
+  });
 });
 
 cases.post('/api/v1/cases/:id/reject', async (c) => {

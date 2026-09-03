@@ -5,7 +5,7 @@ import { formatInrCompact, formatCount } from '@/lib/format';
 export const dynamic = 'force-dynamic';
 
 interface Rules { policy_version: string; rules: { rule: number; name: string; verdict: string; description: string }[]; brand_snippet: string }
-interface Decisions { decisions: { id: string; case_id: string; payment_id: string; proposed_action: string; verdict: string; amount_paise: number; decided_at: string; reasons: { rules?: { passed: boolean; rule: number }[] } }[]; counts: Record<string, number>; policy_version: string }
+interface Decisions { decisions: { id: string; case_id: string; payment_id: string; proposed_action: string; verdict: string; amount_paise: number; decided_at: string; reasons: { rules?: { passed: boolean; rule: number }[]; deferred?: boolean } }[]; counts: Record<string, number>; policy_version: string }
 
 /**
  * `/policy` — the twelve rules, the version, and the append-only decision log
@@ -32,7 +32,7 @@ export default async function PolicyPage() {
       <section style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
         <Tile label="Decisions" value={formatCount(total)} note="every one persisted, ALLOWs included" />
         <Tile label="Allowed" value={formatCount(counts.ALLOW ?? 0)} note="cleared by all twelve rules" tone="success" />
-        <Tile label="Denied" value={formatCount(counts.DENY ?? 0)} note="refused; the case is closed by policy" tone="danger" />
+        <Tile label="Denied" value={formatCount(counts.DENY ?? 0)} note="refused — on the payment the case closes; on capacity alone it waits" tone="danger" />
         <Tile label="Awaiting approval" value={formatCount(counts.REQUIRE_APPROVAL ?? 0)} note="a human signs for large money, or for a retry into a live outage" tone="warning" />
       </section>
 
@@ -76,7 +76,7 @@ export default async function PolicyPage() {
                 const colour = d.verdict === 'ALLOW' ? 'var(--success)' : d.verdict === 'DENY' ? 'var(--danger)' : 'var(--warning)';
                 return (
                   <tr key={d.id} style={{ height: 30 }}>
-                    <td style={td}><span className="mono" style={{ color: colour, fontSize: 11 }}>{d.verdict}</span></td>
+                    <td style={td}><span className="mono" style={{ color: colour, fontSize: 11 }}>{d.verdict}</span>{d.reasons.deferred && <span className="mono" style={{ fontSize: 9, color: 'var(--text-tertiary)', marginLeft: 6 }}>deferred</span>}</td>
                     <td style={td}><span className="mono" style={{ fontSize: 11 }}>{d.proposed_action}</span></td>
                     <td style={td}><Link href={`/recovery/${d.case_id}`} className="mono" style={{ color: 'var(--accent)', textDecoration: 'none', fontSize: 11 }}>{d.payment_id}</Link></td>
                     <td className="num" style={td}>{formatInrCompact(d.amount_paise)}</td>

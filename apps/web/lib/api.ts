@@ -344,6 +344,7 @@ export interface CaseList {
     total: number;
     expected_recoverable_paise: number;
     probability_source_mix: { model: number; baseline: number };
+    actions: ActionStats;
   };
 }
 
@@ -371,15 +372,47 @@ export interface CaseDetail {
     policy_version: string;
     input_hash: string;
     decided_at: string;
-    reasons: { rules?: import('@/components/PolicyRuleList').RuleResult[]; human_approval?: unknown };
+    reasons: { rules?: import('@/components/PolicyRuleList').RuleResult[]; human_approval?: unknown; deferred?: boolean };
   }[];
+  actions: RecoveryAction[];
+}
+
+export interface RecoveryAction {
+  id: string;
+  case_id: string;
+  policy_decision_id: string;
+  kind: string;
+  idempotency_key: string;
+  status: 'RESERVED' | 'SENT' | 'SUCCEEDED' | 'FAILED' | 'ESCALATED';
+  attempts: number;
+  cost_paise: number;
+  gateway_reference: string | null;
+  error_class: 'RETRYABLE' | 'TERMINAL' | 'NEEDS_HUMAN' | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface ActionStats {
+  total: number;
+  succeeded: number;
+  failed: number;
+  escalated: number;
+  in_flight: number;
+  retried: number;
+  cost_paise: number;
 }
 
 export const fetchCases = (status?: string, limit = 100) =>
   api<CaseList>(`/api/v1/cases?limit=${limit}${status ? `&status=${status}` : ''}`).catch(
     (): CaseList => ({
       cases: [],
-      stats: { open: 0, total: 0, expected_recoverable_paise: 0, probability_source_mix: { model: 0, baseline: 0 } },
+      stats: {
+        open: 0,
+        total: 0,
+        expected_recoverable_paise: 0,
+        probability_source_mix: { model: 0, baseline: 0 },
+        actions: { total: 0, succeeded: 0, failed: 0, escalated: 0, in_flight: 0, retried: 0, cost_paise: 0 },
+      },
     }),
   );
 

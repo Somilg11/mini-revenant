@@ -9,6 +9,7 @@ import {
   canonicalise,
   evaluatePolicy,
   hashInput,
+  isDeferrable,
   type PolicyApprovedAction,
   type PolicyInput,
 } from './policy.ts';
@@ -188,5 +189,32 @@ describe('closed action set', () => {
 
   test('twelve rules are published for the policy page, numbered in order', () => {
     expect(RULES.map((r) => r.rule)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  });
+});
+
+describe('a capacity DENY defers; any other DENY abandons', () => {
+  test('blast radius alone is "not now"', () => {
+    const d = evaluatePolicy(withInput({ merchantHour: { exposurePaise: BLAST_RADIUS_PAISE_PER_HOUR } }));
+    expect(d.verdict).toBe('DENY');
+    expect(isDeferrable(d)).toBe(true);
+  });
+  test('cooldown, daily count and daily spend are all capacity rules', () => {
+    expect(isDeferrable(evaluatePolicy(withInput({ lastActionAt: '2026-07-28T14:20:00.000Z' })))).toBe(true);
+    expect(isDeferrable(evaluatePolicy(withInput({ merchantToday: { actionCount: 200, actionSpendPaise: 0 } })))).toBe(true);
+    expect(isDeferrable(evaluatePolicy(withInput({ merchantToday: { actionCount: 0, actionSpendPaise: 5_000_000 } })))).toBe(true);
+  });
+  test('a capacity rule beside a large amount still defers — rule 11 asks a human, it does not refuse', () => {
+    const d = evaluatePolicy(withInput({ payment: { amountPaise: 4_000_000 }, merchantHour: { exposurePaise: BLAST_RADIUS_PAISE_PER_HOUR } }));
+    expect(d.verdict).toBe('DENY');
+    expect(isDeferrable(d)).toBe(true);
+  });
+  test('a capacity rule beside an opt-out is still "never"', () => {
+    const d = evaluatePolicy(withInput({ customer: { optedOut: true }, merchantHour: { exposurePaise: BLAST_RADIUS_PAISE_PER_HOUR } }));
+    expect(d.verdict).toBe('DENY');
+    expect(isDeferrable(d)).toBe(false);
+  });
+  test('ALLOW and REQUIRE_APPROVAL are never deferred', () => {
+    expect(isDeferrable(evaluatePolicy(base))).toBe(false);
+    expect(isDeferrable(evaluatePolicy(withInput({ payment: { amountPaise: 4_000_000 } })))).toBe(false);
   });
 });

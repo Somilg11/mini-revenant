@@ -7,7 +7,8 @@ import { sweepAbandoned } from '../app/abandonment.ts';
 import { catchUp as detectionCatchUp } from '../app/detection.ts';
 import { diagnosePending } from '../app/rca.ts';
 import { openCases } from '../app/recovery.ts';
-import { gateOpenCases } from '../app/policy.ts';
+import { runGate } from '../app/policy.ts';
+import { gateway, type GatewayStats } from './gateway.ts';
 import { listMerchants } from '../db/queries.ts';
 import { log } from '../lib/logger.ts';
 import { SimClock, type ClockState } from './clock.ts';
@@ -63,6 +64,8 @@ export interface RunnerState {
   }[];
   /** Deliberately unlabelled — a detector that fires on these is wrong (§8.4). */
   noiseWindows: { startedAt: string; endedAt: string }[];
+  /** What the simulated gateway has been asked and how it misbehaved (§8.6). */
+  gateway: GatewayStats;
 }
 
 class Runner {
@@ -136,6 +139,9 @@ class Runner {
   async reset(): Promise<RunnerState> {
     await this.pause();
     await this.ensure();
+    // The gateway's memory is keyed by decision ids that are about to be
+    // truncated; keeping it would answer new keys with old results.
+    gateway.reset();
 
     await sql`TRUNCATE
       outcome_verifications, recovery_actions, policy_decisions, agent_decisions,
@@ -360,8 +366,9 @@ class Runner {
         // Cases follow detection: a failure inside a live incident is scored
         // with `incidentActive` set, which lifts its retry odds (§7.5).
         await openCases(new Date(this.abandonmentSettledMs));
-        // Every proposal passes the gate before anything moves money (§9).
-        await gateOpenCases(new Date(this.abandonmentSettledMs));
+        // Every proposal passes the gate before anything moves money, and
+        // what the gate clears is executed in the same sweep (§9).
+        await runGate(new Date(this.abandonmentSettledMs));
       } catch (err) {
         // Detection failing must not stop the replay: the pipeline is the
         // thing under test, and a stalled clock hides that it still works.
@@ -446,9 +453,12 @@ class Runner {
       const r = await openCases(new Date(endMs), 500);
       if (r.opened === 0 && r.considered === 0) break;
     }
+    // Gate and execute in batches, not gate-everything-then-execute: rules
+    // 7–9 read the actions already taken, so a batch that executes before the
+    // next is judged is what makes the daily budgets bite.
     for (let i = 0; i < 200; i += 1) {
-      const g = await gateOpenCases(new Date(endMs), 500);
-      if (g.evaluated === 0) break;
+      const g = await runGate(new Date(endMs), 500);
+      if (g.gate.evaluated === 0 && g.execute.executed === 0 && g.execute.skipped === 0) break;
     }
     log.info('simulator finalised', {
       abandoned,
@@ -487,6 +497,7 @@ class Runner {
           }
         : null,
       emitted: this.cursor,
+      gateway: gateway.snapshot(),
       incidents: (this.dataset?.incidents ?? []).map((i) => ({
         id: i.id,
         kind: i.kind,

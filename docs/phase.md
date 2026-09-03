@@ -907,23 +907,90 @@ are spent against the wrong clock.
 
 ## P13 — Executor and simulated gateway
 
-**Status:** TODO
+**Status:** DONE — 12 + 11 unit, 6 integration, `bun run check` green
 
-- `app/executor.ts` — signature accepts only `PolicyApprovedAction`;
-  idempotency key **reserved before** the gateway call
-- `sim/gateway.ts` — two routes; `secondary` refuses INR-only instruments (UPI,
-  netbanking, RuPay) so `alternate_gateway` has to be earned
-- Reads the ground-truth counterfactual for the intervention actually chosen
-- Injected faults: 5% RETRYABLE (429/503), 2% timeout with unknown outcome,
-  1% TERMINAL
-- Error classification `RETRYABLE` / `TERMINAL` / `NEEDS_HUMAN`; retry logic
-  reads the **class**, never the message text; unclassified defaults to
-  `NEEDS_HUMAN`
+- `domain/execution.ts` — PURE: `classify()` reads the error **class**, never
+  the message, unclassified ⇒ `NEEDS_HUMAN`; `nextStep()` retries RETRYABLE
+  twice then escalates, fails TERMINAL at once; `backoffMs()` capped
+  exponential with jitter passed in; `drawFault()` maps one uniform draw onto
+  the §8.6 table; `routeAccepts()` — `secondary` refuses UPI, netbanking and
+  RuPay; `counterfactualFor()` — which ground-truth label each kind reads
+- `sim/gateway.ts` — `SimulatedGateway.executeAction(kind, paymentId, key)`
+  answers from `ground_truth_labels` (never a fresh coin toss), emits
+  `payment.attempted` then `captured`/`failed` **through `ingestBatch`** — the
+  real webhook path, nothing written to `payments` — and honours its own
+  idempotency: a remembered key returns the first result and never acts twice.
+  Faults are seeded from the key, so a replay misbehaves identically. A
+  timeout acts half the time before dropping the connection; `lookup(key)`
+  is how the caller finds out which half
+- `app/executor.ts` — `execute(action: PolicyApprovedAction, decisionId, now)`.
+  Idempotency key `ik_<decisionId>` reserved with `INSERT … ON CONFLICT DO
+  NOTHING` **before** the gateway call — a second reservation returns the first
+  row, no read-then-write. RETRYABLE ⇒ backoff, twice, then `ESCALATED`;
+  TERMINAL ⇒ `FAILED`; unclassified ⇒ `ESCALATED` with `NEEDS_HUMAN`; timeout
+  ⇒ **reconcile by reference first**, adopt the gateway's record if it has
+  one, retry only on a confirmed "nothing", still bounded. Case ⇒ `ACTING`.
+  `action.executed` on the stream
+- `app/policy.ts` — `executeApproved()` reconstructs each approved decision
+  from its **stored input**, re-evaluates, and asks `approve()` for the brand
+  again: the executor never trusts an object that outlived its transaction,
+  and a crash between decision and action loses nothing. `runGate()` = gate
+  then execute; the runner calls it per sweep and in batches at finalisation
+- `POST /cases/:id/approve` now resolves **and executes**; the response carries
+  status, attempts, key and reference. `GET /cases/:id` returns `actions`;
+  `GET /cases` stats carry action counts; `GET /sim/state` carries the
+  gateway's fault counters
+- Web: `ActionList` on the case page — status, kind, idempotency key,
+  attempts (with the retry story when > 1), error class, reference, cost
+- `migrations/006_action_indexes.sql`
 
-**Gate:** actions execute idempotently · injected 429s retry with capped backoff
-and jitter, twice, then **escalate rather than loop** · **a timeout with an
-unknown outcome reconciles by reference and is never blind-retried** · the same
-idempotency key never produces two gateway effects.
+**Gate, one 60× replay, zero errors in the log:**
+
+| | |
+|---|---|
+| Gateway calls / effects | 3,601 / 3,365 |
+| Faults injected | 172 RETRYABLE · 57 timeout · 37 TERMINAL |
+| Actions | 3,402 — **3,365 SUCCEEDED, 37 FAILED (TERMINAL), 0 ESCALATED** |
+| Needed retries | 190 (177 succeeded on the 2nd attempt, 9 on the 3rd) |
+| Timeouts reconciled | 53 found at the gateway and adopted, 48 confirmed lost then retried — **0 blind retries** |
+| Same key, two effects | 0 — asserted by constraint in the integration test, and by the fakes in the unit test |
+| Payments CAPTURED after a SUCCEEDED action | 325 of 3,365 (the counterfactual said so; attribution is P14) |
+
+A key that draws three RETRYABLE faults in a row escalates rather than loops
+— (0.05)³ per key, none in this run, and the unit test pins it. The route
+refusal never fired because the strategy engine already never sends an
+INR-only instrument to `alternate_gateway` (P11); the integration test forces
+it and asserts TERMINAL with no events emitted.
+
+### Two things the executor exposed in the gate, both fixed
+
+1. **A capacity DENY was permanent.** Rules 6–9 (cooldown, daily count, daily
+   spend, hourly blast radius) refuse because of *when*, not because of the
+   payment. The P12 code closed the case `ABANDONED_BY_POLICY` on any DENY,
+   and the first replay abandoned 4,134 cases — 60% of all cases — on rule 9
+   alone. Now a DENY whose failed **DENY** rules are all capacity rules is
+   recorded like any other (`reasons.deferred = true`, verdict `DENY`, the
+   audit log is unchanged) but leaves the case OPEN; `gateCandidates` judges
+   it again once its latest deferral is an hour old in simulated time. A
+   failed rule 11 beside them does not make it permanent — that rule asks a
+   human, it does not refuse. After the fix: **44 abandoned**, all on the
+   payment itself.
+2. **The executor must stamp actions with simulated time.** Rules 6–9 read
+   `recovery_actions.created_at`; `now()` would spend budgets against the
+   wrong clock. `created_at` and `completed_at` are the simulated `now`.
+
+### Known limitation, not P13's to fix
+
+The relay drains 50 rows per 200 ms (~250 events/s). At 60× the runner emits
+the 292k events in under three minutes, so most projection — and therefore
+most case opening and gating — happens in the end-of-run drain with the clock
+parked at the last window. 3,501 of 6,839 cases opened on the final day and
+2,583 were gated inside one simulated hour, where the ₹2L/hour blast radius
+deferred them. They are OPEN, honestly labelled *deferred* on the case page,
+and would clear if the clock moved on. The fix is the runner holding the
+clock behind the outbox depth (§8.5: "simulated time must never run ahead of
+the data") or a faster relay; either changes the replay's wall-clock time and
+is a P18 decision.
 
 ---
 

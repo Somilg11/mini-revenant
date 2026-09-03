@@ -24,11 +24,19 @@ export function ApprovalBar({ caseId, amount }: { caseId: string; amount: string
     setMessage(null);
     try {
       const res = await fetch(`${BASE}/api/v1/cases/${caseId}/${kind}`, { method: 'POST' });
-      const body = (await res.json()) as { error?: { message?: string; detail?: { failedRules?: string[] } }; action?: { kind: string } };
+      const body = (await res.json()) as {
+        error?: { message?: string; detail?: { failedRules?: string[] } };
+        action?: { kind: string; status: string; attempts: number; gateway_reference: string | null; reconciled: boolean; recovered: boolean | null };
+      };
       if (!res.ok) {
         setMessage(`${body.error?.message ?? 'failed'}${body.error?.detail?.failedRules ? ' — ' + body.error.detail.failedRules.join('; ') : ''}`);
+      } else if (kind === 'reject') {
+        setMessage('rejected');
+        start(() => router.refresh());
       } else {
-        setMessage(kind === 'approve' ? `approved — ${body.action?.kind} will execute` : 'rejected');
+        const a = body.action;
+        const verb = a?.status === 'SUCCEEDED' ? `sent${a.reconciled ? ' (reconciled after a timeout)' : ''}` : a?.status === 'ESCALATED' ? 'escalated to a person' : 'failed at the gateway';
+        setMessage(`approved — ${a?.kind} ${verb}${a?.attempts && a.attempts > 1 ? ` after ${a.attempts} attempts` : ''}${a?.gateway_reference ? ` · ${a.gateway_reference}` : ''}`);
         start(() => router.refresh());
       }
     } catch {
