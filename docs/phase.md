@@ -736,21 +736,54 @@ candidate scanned the table and the sweep doubled the replay time (300 s →
 
 ## P10 — Trained model
 
-**Status:** TODO
+**Status:** DONE — 238 unit + 69 integration
 
-- `ml/train.ts` — batch gradient descent, ~400 epochs, lr 0.1, L2 1e-4,
-  **70/15/15 chronological split by position, never random**
-- 10-bucket calibration map, AUC, Brier, log loss, calibration curve persisted
-  to `model_versions`; activation guarded by `model_one_active`
-- `/model` page — the model card
-- `bun train`
+- `ml/logistic.ts` — batch gradient descent with L2, standardisation, AUC
+  (Mann–Whitney), Brier, log loss, ten-bucket calibration. Pure, tested on
+  synthetic data with a known direction before touching real rows.
+- `ml/train.ts` / `bun train` — 70/15/15 **chronological** split read from the
+  generator's labels, standardisation from train only, calibration from val
+  only, metrics from test only. Persists to `model_versions`, activates under
+  `model_one_active`, and re-prices every open case.
+- `app/recovery.ts` — `rescoreOpenCases()`, so a model change is visible on
+  existing cases rather than only on new ones
+- `/api/v1/model`, `/api/v1/model/calibration`, `POST .../deactivate`,
+  `POST .../:id/activate`
+- Web: `/model` — the model card with the calibration chart, the coefficient
+  bars, the split boundaries, and the count served from the baseline
 
-**Gate:** AUC and the calibration curve render · predictions flip to
-`source: 'model'` · **deleting the active model row falls the system back to the
-baseline, flagged** (§14 resilience).
+**Gate:** AUC and the calibration curve render · predictions flipped to
+`source: 'model'` — **6,839 of 6,839** · deactivating the model re-priced all
+6,839 back to `baseline`, flagged, and reactivating flipped them again ·
+`model_one_active` refuses a second active row by constraint.
 
-**Watch for:** feature-pipeline skew between training and serving is silent. One
-pipeline, imported by both, or this phase is quietly wrong.
+### The honest result, stated on the card
+
+```
+AUC     0.702   (baseline 0.708)
+Brier   0.115   (baseline 0.174)
+```
+
+**The model ranks no better than the hand-tuned table — and is much better
+calibrated.** The baseline is a lookup keyed on the same failure families the
+generator uses to decide the labels, so it already orders payments well; a
+logistic model over those families plus a handful of numerics cannot beat it at
+ordering. What it adds is calibration: when it says 85%, 86.8% recover, and the
+buckets sit on the diagonal. The Brier improvement is where the value is, and
+`recoverable_revenue` — an expectation — is exactly the figure that calibration
+makes trustworthy.
+
+Reporting AUC alone would have made this look like a regression. Reporting
+Brier alone would have hidden that the ranking did not move. Both are on the
+card, beside the baseline's numbers on the same rows.
+
+**What it is not, also on the card:** it predicts *whether* a payment can be
+recovered — the disjunction of the four counterfactuals — not by which
+intervention. That is the strategy engine's question (P11).
+
+**Weights read sensibly:** `family=TERMINAL` −0.64, `family=TRANSIENT` +0.52,
+`incident_active` +0.06 — the directions §7.5's table encodes, learned from the
+data rather than written down.
 
 ---
 

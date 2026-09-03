@@ -54,6 +54,9 @@ export default async function Home() {
           <a href="/recovery" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}>
             Recovery →
           </a>
+          <a href="/model" style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}>
+            Model →
+          </a>
           <DriftIndicator drift={drift} />
           {summary?.window && (
             <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }} className="mono">

@@ -3,6 +3,7 @@ import { sql } from '../db/client.ts';
 import { notify } from '../db/notify.ts';
 import {
   activeModelRow,
+  candidateForPayment,
   recoveryCandidates,
   type RecoveryCandidate,
 } from '../db/queries.ts';
@@ -157,6 +158,34 @@ export async function openCases(now: Date, limit = BATCH): Promise<OpenCasesResu
     });
   }
   return result;
+}
+
+/**
+ * Re-prices every OPEN case with whichever scorer is currently active.
+ *
+ * Run after a model is activated (badges flip `baseline` → `model`) and after
+ * one is deleted (they flip back). The stored probability and source always
+ * describe the scorer that is live, which is what makes "unplug the model on
+ * stage and watch the badges flip" a demonstration rather than a claim.
+ */
+export async function rescoreOpenCases(): Promise<{ rescored: number; model: number; baseline: number }> {
+  const model = await loadActiveModel();
+  const open = await sql<{ id: string; payment_id: string }[]>`
+    SELECT id, payment_id FROM recovery_cases WHERE status = 'OPEN'`;
+
+  const counts = { rescored: 0, model: 0, baseline: 0 };
+  for (const c of open) {
+    const candidate = await candidateForPayment(c.payment_id);
+    if (!candidate) continue;
+    const { probability, source } = predict(featuresOf(candidate), model);
+    await sql`
+      UPDATE recovery_cases
+      SET recovery_probability = ${probability}, probability_source = ${source}
+      WHERE id = ${c.id}`;
+    counts.rescored += 1;
+    counts[source] += 1;
+  }
+  return counts;
 }
 
 /** Per-strategy odds for one case, for the UI and for P11's EV engine. */

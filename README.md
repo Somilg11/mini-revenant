@@ -13,7 +13,7 @@ DETECT → DIAGNOSE → QUANTIFY → DECIDE → GATE → ACT → VERIFY → LEAR
 It does not retry payments. It decides which failures are worth money, proves
 why, and refuses to act when acting loses.
 
-Today it detects degradations per dimension, diagnoses them, and prices every unresolved failure: an
+Today it detects degradations per dimension, diagnoses them, and prices every unresolved failure with a trained, calibrated model that falls back to a measured baseline when unplugged: an
 eight-hour collapse in international card acceptance moves the overall failure
 rate about seven points — a wobble any dashboard would ignore — and is reported
 as `is_international=true`, carrying 100% of the excess failures.
@@ -197,7 +197,7 @@ toggling it live.**
 | `bun dev` | API on :8090 and web on :3000 |
 | `bun dev:api` / `bun dev:web` | One at a time |
 | `bun seed` | Generate the dataset, print the checksum, report defects (~2 min) |
-| `bun train` | Train the model, print AUC / Brier, activate it |
+| `bun train` | Train the recovery model on the labelled data (~25 s), print the model card, activate it, re-price open cases |
 | `bun whatif` | BASELINE vs AGENT on the held-out split |
 | `bun test` | Domain unit tests (pure functions only) |
 | `bun run test:integration` | Pipeline + analytics tests against Postgres — **stop `bun dev` first** |

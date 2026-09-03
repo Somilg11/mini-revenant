@@ -28,12 +28,32 @@ async function reset(): Promise<void> {
     ON CONFLICT (id) DO NOTHING`;
 }
 
-beforeAll(assertNoCompetingRelay);
+/**
+ * These tests exercise the **baseline** scorer specifically. A trained model
+ * may be active in the database from `bun train` or the model suite; it is set
+ * aside for the duration and restored afterwards, so the assertions here are
+ * about the fallback path and not about whichever scorer happens to be live.
+ */
+let parkedModel: string | null = null;
+
+beforeAll(async () => {
+  await assertNoCompetingRelay();
+  const [active] = await sql<{ id: string }[]>`SELECT id FROM model_versions WHERE is_active`;
+  if (active) {
+    parkedModel = active.id;
+    await sql`UPDATE model_versions SET is_active = FALSE WHERE id = ${active.id}`;
+  }
+}, 30_000);
+
 beforeEach(reset);
+
 afterAll(async () => {
   await reset();
   await sql`DELETE FROM customers WHERE id IN (${CUSTOMER}, ${OPTED_OUT})`;
-});
+  if (parkedModel) {
+    await sql`UPDATE model_versions SET is_active = TRUE WHERE id = ${parkedModel}`;
+  }
+}, 30_000);
 
 /**
  * Drains the worklist. It is global and ordered by creation, so older

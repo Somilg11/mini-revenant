@@ -369,3 +369,41 @@ export const fetchCases = (status?: string, limit = 100) =>
   );
 
 export const fetchCase = (id: string) => api<CaseDetail>(`/api/v1/cases/${id}`);
+
+// ── Model card (§11.2) ───────────────────────────────────────────────────────
+
+export interface CalibrationBucket {
+  lower: number;
+  upper: number;
+  count: number;
+  meanPredicted: number | null;
+  observedRate: number | null;
+}
+
+export interface ModelMetrics {
+  auc: number | null;
+  brier: number | null;
+  logLoss: number | null;
+  baselineAuc: number | null;
+  baselineBrier: number | null;
+  positiveRate: number;
+  rows: { train: number; val: number; test: number };
+  split_boundaries: { trainEndsAt: string | null; valEndsAt: string | null; testEndsAt: string | null };
+  calibration_curve: CalibrationBucket[];
+  loss_history: number[];
+  fit: { epochs: number; learningRate: number; l2: number };
+}
+
+export interface ModelCard {
+  active: {
+    id: string;
+    kind: string;
+    trained_at: string;
+    coefficients: { weights: number[]; intercept: number; feature_names: string[] };
+    metrics: ModelMetrics;
+  } | null;
+  versions: { id: string; trained_at: string; is_active: boolean; metrics: ModelMetrics }[];
+}
+
+export const fetchModel = () =>
+  api<ModelCard>('/api/v1/model').catch((): ModelCard => ({ active: null, versions: [] }));

@@ -790,3 +790,90 @@ export async function candidateForPayment(
     WHERE p.id = ${paymentId}`;
   return row ?? null;
 }
+
+// ── Training (§7.5) ──────────────────────────────────────────────────────────
+
+export interface TrainingRow extends RecoveryCandidate {
+  recoverable: boolean;
+  split: 'train' | 'val' | 'test';
+}
+
+/**
+ * Every labelled payment with the features it would have been scored with.
+ *
+ * Same shape as the worklist so `featuresOf` applies unchanged — the one
+ * encoding pipeline again. Ordered by creation because the split is
+ * chronological: the generator assigned `split` by position, and reading rows
+ * in that order makes the boundary visible on the model card.
+ */
+export async function trainingRows(db: Sql = sql): Promise<TrainingRow[]> {
+  return db<TrainingRow[]>`
+    SELECT
+      p.id, p.merchant_id, p.customer_id, p.amount_paise,
+      p.method::text AS method, p.bank, p.card_network, p.failure_code,
+      p.abandoned, p.attempt_index, p.created_at::text, p.last_event_at::text,
+      p.is_international,
+      COALESCE(cust.attempts, 0)::int  AS customer_prior_attempts,
+      COALESCE(cust.successes, 0)::int AS customer_prior_successes,
+      COALESCE(merch.attempts, 0)::int  AS merchant_prior_attempts,
+      COALESCE(merch.successes, 0)::int AS merchant_prior_successes,
+      COALESCE(EXTRACT(EPOCH FROM (p.created_at - prev.last_created))::int, -1)
+        AS seconds_since_last_attempt,
+      EXISTS (
+        SELECT 1 FROM incidents i
+        WHERE i.opened_at <= p.created_at
+          AND (i.status = 'OPEN' OR i.resolved_at >= p.created_at)
+          AND (
+            (i.dimension = 'all')
+            OR (i.dimension = 'method' AND i.dimension_value = p.method::text)
+            OR (i.dimension = 'bank' AND i.dimension_value = COALESCE(p.bank, 'none'))
+            OR (i.dimension = 'is_international'
+                AND i.dimension_value = CASE WHEN p.is_international THEN 'true' ELSE 'false' END)
+            OR (i.dimension = 'card_network' AND i.dimension_value = COALESCE(p.card_network, 'none'))
+          )
+      ) AS incident_active,
+      cu.opted_out,
+      l.recoverable,
+      l.split
+    FROM ground_truth_labels l
+    JOIN payments p ON p.id = l.payment_id
+    JOIN customers cu ON cu.id = p.customer_id
+    LEFT JOIN LATERAL (
+      SELECT count(*)::int AS attempts,
+             count(*) FILTER (WHERE p2.state = 'CAPTURED')::int AS successes
+      FROM payments p2 WHERE p2.customer_id = p.customer_id AND p2.created_at < p.created_at
+    ) cust ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT count(*)::int AS attempts,
+             count(*) FILTER (WHERE p3.state = 'CAPTURED')::int AS successes
+      FROM payments p3 WHERE p3.merchant_id = p.merchant_id AND p3.created_at < p.created_at
+    ) merch ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT max(p4.created_at) AS last_created
+      FROM payments p4 WHERE p4.customer_id = p.customer_id AND p4.created_at < p.created_at
+    ) prev ON TRUE
+    ORDER BY p.created_at, p.id`;
+}
+
+export interface ModelVersionRow {
+  id: string;
+  kind: string;
+  coefficients: unknown;
+  calibration: unknown;
+  metrics: unknown;
+  trained_at: string;
+  is_active: boolean;
+}
+
+export async function listModelVersions(db: Sql = sql): Promise<ModelVersionRow[]> {
+  return db<ModelVersionRow[]>`
+    SELECT id, kind, coefficients, calibration, metrics, trained_at::text, is_active
+    FROM model_versions ORDER BY trained_at DESC LIMIT 20`;
+}
+
+export async function activeModelVersion(db: Sql = sql): Promise<ModelVersionRow | null> {
+  const [row] = await db<ModelVersionRow[]>`
+    SELECT id, kind, coefficients, calibration, metrics, trained_at::text, is_active
+    FROM model_versions WHERE is_active LIMIT 1`;
+  return row ?? null;
+}
