@@ -17,12 +17,14 @@ export const sim = new Hono<AppEnv>();
  * to guess whether "toggle" is about to wipe the database.
  */
 
-sim.get('/api/v1/sim/state', (c) => {
-  // The first reader after boot kicks off dataset generation in the
-  // background; the response is whatever is true right now.
-  runner.warm();
-  return c.json(runner.state());
-});
+/**
+ * Never generates anything: the dataset is built on Play or reset. Reading
+ * the state is what a dashboard does on every load, and generating 75,000
+ * payments behind that read pins the event loop for the better part of a
+ * minute. Pages that want the answer key without a loaded dataset read it
+ * from `/api/v1/evaluation`, which comes from the database.
+ */
+sim.get('/api/v1/sim/state', (c) => c.json(runner.state()));
 
 sim.post('/api/v1/sim/start', async (c) => c.json(await runner.start()));
 sim.post('/api/v1/sim/pause', async (c) => c.json(await runner.pause()));

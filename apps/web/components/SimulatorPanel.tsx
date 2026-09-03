@@ -63,6 +63,17 @@ export function SimulatorPanel({ initial, evaluation: initialEval }: { initial: 
   const d = state?.dataset ?? null;
   const matches = new Map((evaluation?.detection.matches ?? []).map((m) => [m.groundTruthId, m]));
   const rcaByKind = new Map((evaluation?.rca?.results ?? []).map((r) => [r.kind, r]));
+  /**
+   * The injected windows come from the running simulator when it holds the
+   * dataset, and from the stored answer key otherwise — so this page has
+   * something true to show on a database that was replayed by an API process
+   * that has since restarted. Jumping needs the live dataset, so it is only
+   * offered when there is one.
+   */
+  const canJump = (state?.incidents.length ?? 0) > 0;
+  const injected = canJump
+    ? state!.incidents
+    : (evaluation?.detection.matches ?? []).map((m) => ({ id: m.groundTruthId, kind: m.kind, startedAt: m.startedAt, endedAt: m.endedAt, affectedPayments: m.affectedPayments }));
   const g = state?.gateway;
 
   return (
@@ -87,7 +98,7 @@ export function SimulatorPanel({ initial, evaluation: initialEval }: { initial: 
         <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
           <thead><tr style={{ color: 'var(--text-secondary)', fontSize: 11 }}><th style={th}>Incident</th><th style={th}>Window (IST)</th><th style={thR}>Affected</th><th style={th}>Status</th><th style={th}>Detected as</th><th style={th}></th></tr></thead>
           <tbody>
-            {(state?.incidents ?? []).map((i) => {
+            {injected.map((i) => {
               const m = matches.get(i.id);
               const rca = rcaByKind.get(i.kind);
               const passed = clock ? Date.parse(clock.now) >= Date.parse(i.startedAt) : false;
@@ -115,11 +126,17 @@ export function SimulatorPanel({ initial, evaluation: initialEval }: { initial: 
                       <span style={{ color: 'var(--text-tertiary)' }}>—</span>
                     )}
                   </td>
-                  <td style={{ ...td, textAlign: 'right' }}><button onClick={() => act('jump', () => simApi.jump(i.id))} disabled={busy !== null} style={chip}>{busy === 'jump' ? '…' : 'jump here'}</button></td>
+                  <td style={{ ...td, textAlign: 'right' }}>
+                    {canJump ? (
+                      <button onClick={() => act('jump', () => simApi.jump(i.id))} disabled={busy !== null} style={chip}>{busy === 'jump' ? '…' : 'jump here'}</button>
+                    ) : (
+                      <span style={{ fontSize: 10, color: 'var(--text-tertiary)' }} title="press Play once so the simulator holds the dataset">press Play to jump</span>
+                    )}
+                  </td>
                 </tr>
               );
             })}
-            {(state?.incidents.length ?? 0) === 0 && <tr><td colSpan={6} style={{ ...td, color: 'var(--text-tertiary)' }}>No dataset loaded.</td></tr>}
+            {injected.length === 0 && <tr><td colSpan={6} style={{ ...td, color: 'var(--text-tertiary)' }}>No dataset — press Play, or run <span className="mono">bun seed</span>.</td></tr>}
           </tbody>
         </table>
         {(evaluation?.detection.unmatched.length ?? 0) > 0 && (
@@ -135,7 +152,7 @@ export function SimulatorPanel({ initial, evaluation: initialEval }: { initial: 
           <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
             <thead><tr style={{ color: 'var(--text-secondary)', fontSize: 11 }}><th style={th}>Window (IST)</th><th style={th}>Verdict</th></tr></thead>
             <tbody>
-              {(evaluation?.noise_windows.windows ?? state?.noiseWindows.map((w) => ({ ...w, firedIncidents: 0 })) ?? []).map((w) => (
+              {(evaluation?.noise_windows.windows ?? state?.noiseWindows?.map((w) => ({ ...w, firedIncidents: 0 })) ?? []).map((w) => (
                 <tr key={w.startedAt} style={{ height: 32 }}>
                   <td style={td} className="mono">{formatIst(w.startedAt)} → {formatIst(w.endedAt)}</td>
                   <td style={td}><span className="mono" style={{ fontSize: 11, color: w.firedIncidents > 0 ? 'var(--danger)' : 'var(--success)' }}>{w.firedIncidents > 0 ? `FIRED ×${w.firedIncidents}` : 'clean'}</span></td>

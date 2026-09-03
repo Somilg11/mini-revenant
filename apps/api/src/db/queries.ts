@@ -1052,7 +1052,11 @@ export async function decisionsForCase(caseId: string, db: Sql = sql): Promise<P
     JOIN recovery_cases c ON c.id = d.case_id
     JOIN payments p ON p.id = c.payment_id
     WHERE d.case_id = ${caseId}
-    ORDER BY d.decided_at, d.id`;
+    -- Insertion order, not simulated time: ids carry the wall clock, and the
+    -- verdict that governs the case is the one made last. A human approval
+    -- made after the simulator was jumped back in time is still the latest
+    -- decision. (The audit trail orders by simulated time; that is its job.)
+    ORDER BY d.id`;
 }
 
 /** The kill switch (§7.7 rule 1). Read by the policy engine on every decision. */
